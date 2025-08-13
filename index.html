@@ -1819,7 +1819,7 @@
                         // Add driver's group counts
                         const totalDogs = driverGroupCounts[1] + driverGroupCounts[2] + driverGroupCounts[3];
                         if (totalDogs > 0) {
-                            tooltipHtml += `<br/><span style="color: #ffd700; font-size: 11px;">Groups: ${driverGroupCounts[1]}, ${driverGroupCounts[2]}, ${driverGroupCounts[3]}</span>`;
+                            tooltipHtml += `<br/><span style="color: #ffd700; font-size: 11px;">${driverGroupCounts[1]}, ${driverGroupCounts[2]}, ${driverGroupCounts[3]}</span>`;
                         }
                         
                         tooltipHtml += `<br/>${escapeHtml(dogNameDisplay)}`;
@@ -2977,7 +2977,7 @@
         console.log('Dog Walking Map v2.7 - Dynamic Date Column with Enhanced Tooltips');
         console.log('The map automatically finds today\'s date column or uses "Combined" as fallback');
         console.log('Hidden: blank entries, "Cancel", "LMCancel", "LM Cancel", "Cancelled", "LM Cancelled"');
-        console.log('Tooltips now show driver group counts');
+        console.log('Tooltips now show driver group counts without the word "Groups"');
     </script>
 </body>
 </html>
