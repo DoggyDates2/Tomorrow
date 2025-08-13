@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🐕 Dog Walking Map v2.6 - Dynamic Date & Cancellation Filtering</title>
+    <title>🐕 Dog Walking Map v2.7 - Enhanced Tooltips with Group Counts</title>
     
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -630,7 +630,7 @@
         </div>
         
         <div class="version-indicator">
-            v2.6 - Dynamic Date
+            v2.7 - Dynamic Date
         </div>
     </div>
 
@@ -1504,7 +1504,7 @@
                 // Update the UI to show which column is active
                 const versionIndicator = document.querySelector('.version-indicator');
                 if (versionIndicator) {
-                    versionIndicator.innerHTML = `v2.6 | Column: ${state.activeColumn}`;
+                    versionIndicator.innerHTML = `v2.7 | Column: ${state.activeColumn}`;
                 }
                 
                 // Validate required columns
@@ -1764,6 +1764,45 @@
                         const isInSelection = dogId && state.selectedMarkers.has(dogId);
                         const hasCallout = row['Callout'] && row['Callout'].trim();
                         
+                        // Calculate group counts for this driver
+                        let driverGroupCounts = { 1: 0, 2: 0, 3: 0 };
+                        if (driver && state.allData && state.activeColumn) {
+                            state.allData.forEach(dataRow => {
+                                if (!dataRow || !dataRow[state.activeColumn]) return;
+                                
+                                const dataColumnValue = dataRow[state.activeColumn].trim();
+                                // Skip blank or cancelled entries
+                                if (!dataColumnValue || dataColumnValue === '') return;
+                                const dataColumnValueLower = dataColumnValue.toLowerCase();
+                                if (dataColumnValueLower === 'cancel' || 
+                                    dataColumnValueLower === 'lmcancel' || 
+                                    dataColumnValueLower === 'lm cancel' ||
+                                    dataColumnValueLower === 'cancelled' ||
+                                    dataColumnValueLower === 'lm cancelled') return;
+                                
+                                const { driver: dataDriver, group: dataGroup } = parseCombined(dataColumnValue);
+                                if (dataDriver !== driver) return;
+                                
+                                // Get the number of dogs (default to 1 if not specified)
+                                const dogCount = parseInt(dataRow['Number of Dogs'] || '1') || 1;
+                                
+                                if (dataGroup !== null) {
+                                    if (typeof dataGroup === 'string' && dataGroup.length > 1) {
+                                        // Multi-group: split and add to each
+                                        dataGroup.split('').forEach(g => {
+                                            const groupNum = parseInt(g);
+                                            if (groupNum >= 1 && groupNum <= 3) {
+                                                driverGroupCounts[groupNum] += dogCount;
+                                            }
+                                        });
+                                    } else if (typeof dataGroup === 'number' && dataGroup >= 1 && dataGroup <= 3) {
+                                        // Single group
+                                        driverGroupCounts[dataGroup] += dogCount;
+                                    }
+                                }
+                            });
+                        }
+                        
                         // Format tooltip as "Driver:Group" then dog name on new line, with count if available, and notes if present
                         const driverDisplay = driver || 'No Driver';
                         const groupDisplay = group ? (row[state.activeColumn] ? row[state.activeColumn].split(':')[1] : group) : '?';
@@ -1776,6 +1815,13 @@
                         if (countValue && countValue.toString().trim() !== '') {
                             tooltipHtml += `  <span style="color: #ff6b6b; font-weight: bold;">(${escapeHtml(countValue)})</span>`;
                         }
+                        
+                        // Add driver's group counts
+                        const totalDogs = driverGroupCounts[1] + driverGroupCounts[2] + driverGroupCounts[3];
+                        if (totalDogs > 0) {
+                            tooltipHtml += `<br/><span style="color: #ffd700; font-size: 11px;">Groups: ${driverGroupCounts[1]}, ${driverGroupCounts[2]}, ${driverGroupCounts[3]}</span>`;
+                        }
+                        
                         tooltipHtml += `<br/>${escapeHtml(dogNameDisplay)}`;
                         
                         // Add notes if present
@@ -2896,6 +2942,7 @@
                 console.log('Data format: Driver:Group (e.g., John:1, Mary:2DD2, Bob:1&2)');
                 console.log('The map will automatically find today\'s date column or use "Combined" as fallback');
                 console.log('Hidden entries: blank, "Cancel", "LMCancel", "LM Cancel", "Cancelled", "LM Cancelled"');
+                console.log('NEW in v2.7: Tooltips show driver group counts');
                 
             } catch (error) {
                 console.error('Error during application initialization:', error);
@@ -2927,9 +2974,10 @@
         // Initialize when DOM is ready
         document.addEventListener('DOMContentLoaded', initializeApp);
 
-        console.log('Dog Walking Map v2.6 - Dynamic Date Column Support with Cancellation Filtering');
+        console.log('Dog Walking Map v2.7 - Dynamic Date Column with Enhanced Tooltips');
         console.log('The map automatically finds today\'s date column or uses "Combined" as fallback');
         console.log('Hidden: blank entries, "Cancel", "LMCancel", "LM Cancel", "Cancelled", "LM Cancelled"');
+        console.log('Tooltips now show driver group counts');
     </script>
 </body>
 </html>
