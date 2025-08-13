@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🐕 Dog Walking Map v2.5 - Dynamic Date Column</title>
+    <title>🐕 Dog Walking Map v2.6 - Dynamic Date & Cancellation Filtering</title>
     
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -630,7 +630,7 @@
         </div>
         
         <div class="version-indicator">
-            v2.5 - Dynamic Date
+            v2.6 - Dynamic Date
         </div>
     </div>
 
@@ -1158,7 +1158,19 @@
             
             state.allData.forEach(row => {
                 if (row && row[state.activeColumn]) {
-                    const { driver } = parseCombined(row[state.activeColumn]);
+                    const columnValue = row[state.activeColumn].trim();
+                    
+                    // Skip blank or cancelled entries
+                    if (!columnValue || columnValue === '') return;
+                    const columnValueLower = columnValue.toLowerCase();
+                    // Check for exact match cancellation patterns
+                    if (columnValueLower === 'cancel' || 
+                        columnValueLower === 'lmcancel' || 
+                        columnValueLower === 'lm cancel' ||
+                        columnValueLower === 'cancelled' ||
+                        columnValueLower === 'lm cancelled') return;
+                    
+                    const { driver } = parseCombined(columnValue);
                     if (driver) {
                         drivers.add(driver);
                     }
@@ -1492,7 +1504,7 @@
                 // Update the UI to show which column is active
                 const versionIndicator = document.querySelector('.version-indicator');
                 if (versionIndicator) {
-                    versionIndicator.innerHTML = `v2.5 | Column: ${state.activeColumn}`;
+                    versionIndicator.innerHTML = `v2.6 | Column: ${state.activeColumn}`;
                 }
                 
                 // Validate required columns
@@ -1507,6 +1519,8 @@
                 const processedData = [];
                 let validRows = 0;
                 const invalidRows = [];
+                let cancelledCount = 0;
+                let blankCount = 0;
                 
                 rows.forEach((row, index) => {
                     try {
@@ -1526,6 +1540,26 @@
                         if (!validateCoordinates(lat, lng)) {
                             invalidRows.push(index + 2);
                             return;
+                        }
+                        
+                        // Check for cancelled or blank entries in the active column
+                        if (state.activeColumn && obj[state.activeColumn]) {
+                            const columnValue = obj[state.activeColumn].trim();
+                            if (!columnValue || columnValue === '') {
+                                blankCount++;
+                            } else {
+                                const columnValueLower = columnValue.toLowerCase();
+                                // Check for exact match cancellation patterns
+                                if (columnValueLower === 'cancel' || 
+                                    columnValueLower === 'lmcancel' || 
+                                    columnValueLower === 'lm cancel' ||
+                                    columnValueLower === 'cancelled' ||
+                                    columnValueLower === 'lm cancelled') {
+                                    cancelledCount++;
+                                }
+                            }
+                        } else if (state.activeColumn) {
+                            blankCount++;
                         }
                         
                         obj['_lat'] = lat;
@@ -1550,6 +1584,12 @@
                 state.coordinateLookup.clear();
                 
                 let message = `Loaded ${validRows} locations`;
+                if (cancelledCount > 0) {
+                    message += ` (${cancelledCount} cancelled)`;
+                }
+                if (blankCount > 0) {
+                    message += ` (${blankCount} unassigned)`;
+                }
                 if (invalidRows.length > 0) {
                     const showRows = invalidRows.slice(0, 5);
                     const moreText = invalidRows.length > 5 ? ` and ${invalidRows.length - 5} more` : '';
@@ -1603,10 +1643,24 @@
                 state.filteredData = state.allData.filter(row => {
                     if (!row) return false;
                     
+                    // Check if the active column value is blank or contains Cancel/LMCancel
+                    const columnValue = state.activeColumn ? row[state.activeColumn] : '';
+                    if (!columnValue || columnValue.trim() === '') {
+                        return false; // Skip if blank
+                    }
+                    
+                    const columnValueLower = columnValue.toLowerCase().trim();
+                    // Check for various cancellation patterns (exact match)
+                    if (columnValueLower === 'cancel' || 
+                        columnValueLower === 'lmcancel' || 
+                        columnValueLower === 'lm cancel' ||
+                        columnValueLower === 'cancelled' ||
+                        columnValueLower === 'lm cancelled') {
+                        return false; // Skip if it's a cancellation
+                    }
+                    
                     // Get driver and group from active column
-                    const { driver, group } = state.activeColumn ? 
-                        parseCombined(row[state.activeColumn]) : 
-                        { driver: '', group: null };
+                    const { driver, group } = parseCombined(columnValue);
                     
                     // Search filter
                     if (searchTerm) {
@@ -1658,7 +1712,19 @@
                 state.colorMap = {};
                 state.allData.forEach(row => {
                     if (row && state.activeColumn && row[state.activeColumn]) {
-                        const { driver } = parseCombined(row[state.activeColumn]);
+                        const columnValue = row[state.activeColumn].trim();
+                        
+                        // Skip blank or cancelled entries
+                        if (!columnValue || columnValue === '') return;
+                        const columnValueLower = columnValue.toLowerCase();
+                        // Check for exact match cancellation patterns
+                        if (columnValueLower === 'cancel' || 
+                            columnValueLower === 'lmcancel' || 
+                            columnValueLower === 'lm cancel' ||
+                            columnValueLower === 'cancelled' ||
+                            columnValueLower === 'lm cancelled') return;
+                        
+                        const { driver } = parseCombined(columnValue);
                         if (driver) {
                             state.colorMap[driver] = getDriverColor(driver);
                         }
@@ -2334,7 +2400,19 @@
                         
                         state.allData.forEach(row => {
                             if (!row || !row[state.activeColumn]) return;
-                            const { driver, group } = parseCombined(row[state.activeColumn]);
+                            
+                            const columnValue = row[state.activeColumn].trim();
+                            // Skip blank or cancelled entries
+                            if (!columnValue || columnValue === '') return;
+                            const columnValueLower = columnValue.toLowerCase();
+                            // Check for exact match cancellation patterns
+                            if (columnValueLower === 'cancel' || 
+                                columnValueLower === 'lmcancel' || 
+                                columnValueLower === 'lm cancel' ||
+                                columnValueLower === 'cancelled' ||
+                                columnValueLower === 'lm cancelled') return;
+                            
+                            const { driver, group } = parseCombined(columnValue);
                             if (driver !== key) return;
                             
                             // Get the number of dogs (default to 1 if not specified)
@@ -2817,6 +2895,7 @@
                 console.log('Business codes supported: DD (Discount Day), SS (Single Siblings), AA, F');
                 console.log('Data format: Driver:Group (e.g., John:1, Mary:2DD2, Bob:1&2)');
                 console.log('The map will automatically find today\'s date column or use "Combined" as fallback');
+                console.log('Hidden entries: blank, "Cancel", "LMCancel", "LM Cancel", "Cancelled", "LM Cancelled"');
                 
             } catch (error) {
                 console.error('Error during application initialization:', error);
@@ -2848,8 +2927,9 @@
         // Initialize when DOM is ready
         document.addEventListener('DOMContentLoaded', initializeApp);
 
-        console.log('Dog Walking Map v2.5 - Dynamic Date Column Support');
+        console.log('Dog Walking Map v2.6 - Dynamic Date Column Support with Cancellation Filtering');
         console.log('The map automatically finds today\'s date column or uses "Combined" as fallback');
+        console.log('Hidden: blank entries, "Cancel", "LMCancel", "LM Cancel", "Cancelled", "LM Cancelled"');
     </script>
 </body>
 </html>
