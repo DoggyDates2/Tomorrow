@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🐕 Dog Walking Map v2.7 - Enhanced Tooltips with Group Counts</title>
+    <title>🐕 Dog Walking Map v2.7 - Enhanced with TODAY Display</title>
     
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -600,9 +600,24 @@
 
         .version-indicator {
             margin-left: auto;
-            padding: 0 10px;
+            padding: 0 20px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .today-text {
+            font-size: 28px;
+            font-weight: bold;
+            color: #333;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+        
+        .column-info {
+            font-size: 14px;
             color: #666;
-            font-size: 11px;
+            font-weight: 600;
         }
     </style>
 </head>
@@ -630,7 +645,8 @@
         </div>
         
         <div class="version-indicator">
-            v2.7 - Dynamic Date
+            <span class="today-text">TODAY</span>
+            <span class="column-info" id="columnInfo">Loading...</span>
         </div>
     </div>
 
@@ -1502,9 +1518,9 @@
                 }
                 
                 // Update the UI to show which column is active
-                const versionIndicator = document.querySelector('.version-indicator');
-                if (versionIndicator) {
-                    versionIndicator.innerHTML = `v2.7 | Column: ${state.activeColumn}`;
+                const columnInfo = document.getElementById('columnInfo');
+                if (columnInfo) {
+                    columnInfo.textContent = state.activeColumn;
                 }
                 
                 // Validate required columns
@@ -2942,7 +2958,7 @@
                 console.log('Data format: Driver:Group (e.g., John:1, Mary:2DD2, Bob:1&2)');
                 console.log('The map will automatically find today\'s date column or use "Combined" as fallback');
                 console.log('Hidden entries: blank, "Cancel", "LMCancel", "LM Cancel", "Cancelled", "LM Cancelled"');
-                console.log('NEW in v2.7: Tooltips show driver group counts');
+                console.log('NEW in v2.7: TODAY prominently displayed with active column');
                 
             } catch (error) {
                 console.error('Error during application initialization:', error);
@@ -2974,10 +2990,10 @@
         // Initialize when DOM is ready
         document.addEventListener('DOMContentLoaded', initializeApp);
 
-        console.log('Dog Walking Map v2.7 - Dynamic Date Column with Enhanced Tooltips');
+        console.log('Dog Walking Map v2.7 - Dynamic Date Column with TODAY Display');
         console.log('The map automatically finds today\'s date column or uses "Combined" as fallback');
         console.log('Hidden: blank entries, "Cancel", "LMCancel", "LM Cancel", "Cancelled", "LM Cancelled"');
-        console.log('Tooltips now show driver group counts without the word "Groups"');
+        console.log('Displays TODAY prominently with the active column name');
     </script>
 </body>
 </html>
