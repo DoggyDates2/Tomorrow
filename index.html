@@ -645,7 +645,7 @@
         </div>
         
         <div class="version-indicator">
-            <span class="today-text">TODAY</span>
+            <span class="today-text">TOMORROW</span>
             <span class="column-info" id="columnInfo">Loading...</span>
         </div>
     </div>
@@ -755,10 +755,21 @@
         // Get today's date in various formats to match spreadsheet columns
         function getTodayFormats() {
             const today = new Date();
+            // Calculate next work day
+            const dayOfWeek = today.getDay(); // 0 = Sunday, 1 = Monday, ... 6 = Saturday
+            
+            if (dayOfWeek === 5) { // Friday
+                today.setDate(today.getDate() + 3); // Jump to Monday
+            } else if (dayOfWeek === 6) { // Saturday  
+                today.setDate(today.getDate() + 2); // Jump to Monday
+            } else {
+                today.setDate(today.getDate() + 1); // Regular next day
+            }
+            
             const month = today.getMonth() + 1;
             const day = today.getDate();
             const year = today.getFullYear();
-            
+                    
             // Month names
             const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
                                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
