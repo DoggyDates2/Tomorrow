@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🐕 Dog Walking Map v2.7 - Enhanced with TODAY Display</title>
+    <title>🐕 Dog Walking Map v2.8 - With Fields Support</title>
     
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -261,6 +261,8 @@
             border: none;
             border-radius: 50%;
         }
+
+
 
         .edit-section {
             padding: 8px;
@@ -552,14 +554,14 @@
             border: 1px solid #333 !important;
             color: white !important;
             font-weight: 600 !important;
-            font-size: 16px !important;  /* Increased from 12px */
-            padding: 8px 12px !important;  /* Increased padding for bigger text */
+            font-size: 16px !important;
+            padding: 8px 12px !important;
             border-radius: 4px !important;
             box-shadow: 0 2px 5px rgba(0,0,0,0.4) !important;
-            white-space: normal !important;  /* Changed from nowrap to allow wrapping */
-            max-width: 250px !important;  /* Set max width for text wrapping */
-            text-align: center !important;  /* Center align the text */
-            line-height: 1.4 !important;  /* Better line spacing */
+            white-space: normal !important;
+            max-width: 250px !important;
+            text-align: center !important;
+            line-height: 1.4 !important;
         }
         
         .leaflet-tooltip-top:before {
@@ -619,6 +621,17 @@
             color: #666;
             font-weight: 600;
         }
+
+        .field-marker-tooltip {
+            background: rgba(0, 0, 0, 0.95) !important;
+            border: 2px solid #666 !important;
+            color: white !important;
+            font-weight: 600 !important;
+            font-size: 14px !important;
+            padding: 6px 10px !important;
+            border-radius: 4px !important;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.4) !important;
+        }
     </style>
 </head>
 <body>
@@ -645,7 +658,7 @@
         </div>
         
         <div class="version-indicator">
-            <span class="today-text">TOMORROW</span>
+            <span class="today-text" id="nextWorkingDayText">NEXT WORKING DAY</span>
             <span class="column-info" id="columnInfo">Loading...</span>
         </div>
     </div>
@@ -699,6 +712,7 @@
         const CONFIG = Object.freeze({
             SHEET_ID: '1a3xyQvgTqybhQucjsq-g24g4GAnGqV3fOOZktVt9VhU',
             WORKSHEET_NAME: 'Schedule',
+            FIELDS_WORKSHEET_NAME: 'Fields', // New fields tab
             API_KEY: 'AIzaSyAGLteYp1k98SZo0FMClRgBX0LBsgpMxqI',
             APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbyAIZavcGcPhKH8WC6Ynop5NESF5sE2eyePubRoqebSbj3sbPxr4BMp-eYD81-th7cstQ/exec',
             DEFAULT_LAT: 42.2968,
@@ -707,8 +721,8 @@
             DEBOUNCE_DELAY: 300,
             MAX_MARKERS: 10000,
             MAX_SELECTION: 500,
-            DATE_COLUMN_FORMAT: 'M/D/YYYY', // Format for date columns: M/D/YYYY or MM/DD/YYYY
-            FALLBACK_COLUMN: 'Combined' // Fallback if today's date column doesn't exist
+            DATE_COLUMN_FORMAT: 'M/D/YYYY',
+            FALLBACK_COLUMN: 'Combined'
         });
 
         // Master color palette
@@ -727,9 +741,11 @@
         const state = {
             map: null,
             markers: [],
+            fieldMarkers: [], // New: separate array for field markers
             markerLookup: new Map(),
             coordinateLookup: new Map(),
             allData: [],
+            fieldsData: [], // New: data from Fields tab
             filteredData: [],
             colorMap: {},
             selectedMarker: null,
@@ -746,60 +762,43 @@
             pendingSaves: new Map(),
             saveQueue: [],
             isSaving: false,
-            activeColumn: null, // The column we're currently using for driver:group data
-            dateColumnFound: false // Whether we found today's date column
+            activeColumn: null,
+            dateColumnFound: false
         };
 
         // ==================== UTILITY FUNCTIONS ====================
         
-        // Get today's date in various formats to match spreadsheet columns
+        // Get next working day's date in various formats to match spreadsheet columns
         function getTodayFormats() {
             const today = new Date();
-            // Calculate next work day
-            const dayOfWeek = today.getDay(); // 0 = Sunday, 1 = Monday, ... 6 = Saturday
+            const nextWorkingDay = getNextWorkingDay(today);
+            const month = nextWorkingDay.getMonth() + 1;
+            const day = nextWorkingDay.getDate();
+            const year = nextWorkingDay.getFullYear();
             
-            if (dayOfWeek === 5) { // Friday
-                today.setDate(today.getDate() + 3); // Jump to Monday
-            } else if (dayOfWeek === 6) { // Saturday  
-                today.setDate(today.getDate() + 2); // Jump to Monday
-            } else {
-                today.setDate(today.getDate() + 1); // Regular next day
-            }
-            
-            const month = today.getMonth() + 1;
-            const day = today.getDate();
-            const year = today.getFullYear();
-                    
-            // Month names
             const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
                                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
             const fullMonthNames = ['January', 'February', 'March', 'April', 'May', 'June',
                                    'July', 'August', 'September', 'October', 'November', 'December'];
-            const monthName = monthNames[today.getMonth()];
-            const fullMonthName = fullMonthNames[today.getMonth()];
+            const monthName = monthNames[nextWorkingDay.getMonth()];
+            const fullMonthName = fullMonthNames[nextWorkingDay.getMonth()];
             
-            // Try multiple date formats that might be used in the spreadsheet
             return [
-                // Month name formats (like your spreadsheet)
-                `${monthName} ${day}`,                        // Aug 13
-                `${fullMonthName} ${day}`,                    // August 13
-                `${monthName} ${day}, ${year}`,               // Aug 13, 2025
-                `${fullMonthName} ${day}, ${year}`,           // August 13, 2025
-                `${day} ${monthName}`,                        // 13 Aug
-                `${day} ${fullMonthName}`,                    // 13 August
-                
-                // Numeric formats
-                `${month}/${day}/${year}`,                    // 8/13/2025
-                `${month}/${day}/${String(year).slice(-2)}`,  // 8/13/25
-                `${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')}/${year}`, // 08/13/2025
-                `${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')}/${String(year).slice(-2)}`, // 08/13/25
-                `${month}-${day}-${year}`,                    // 8-13-2025
-                `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`, // 2025-08-13
-                
-                // With day of week
-                getDayName(today.getDay()) + ` ${monthName} ${day}`, // Wednesday Aug 13
-                getDayName(today.getDay()) + ` ${month}/${day}`,     // Wednesday 8/13
-                getDayName(today.getDay()),                           // Wednesday
+                `${monthName} ${day}`,
+                `${fullMonthName} ${day}`,
+                `${monthName} ${day}, ${year}`,
+                `${fullMonthName} ${day}, ${year}`,
+                `${day} ${monthName}`,
+                `${day} ${fullMonthName}`,
+                `${month}/${day}/${year}`,
+                `${month}/${day}/${String(year).slice(-2)}`,
+                `${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')}/${year}`,
+                `${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')}/${String(year).slice(-2)}`,
+                `${month}-${day}-${year}`,
+                `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+                getDayName(nextWorkingDay.getDay()) + ` ${monthName} ${day}`,
+                getDayName(nextWorkingDay.getDay()) + ` ${month}/${day}`,
+                getDayName(nextWorkingDay.getDay()),
             ];
         }
         
@@ -808,14 +807,26 @@
             return days[dayIndex];
         }
         
-        // Find the column that matches today's date
+        // Calculate the next working day (Monday-Friday)
+        function getNextWorkingDay(date) {
+            const nextDay = new Date(date);
+            nextDay.setDate(nextDay.getDate() + 1); // Start with tomorrow
+            
+            // Keep advancing until we hit a weekday (Monday = 1, Friday = 5)
+            while (nextDay.getDay() === 0 || nextDay.getDay() === 6) { // Sunday = 0, Saturday = 6
+                nextDay.setDate(nextDay.getDate() + 1);
+            }
+            
+            return nextDay;
+        }
+        
+        // Find the column that matches the next working day's date
         function findDateColumn(headers) {
-            const todayFormats = getTodayFormats();
+            const nextWorkingDayFormats = getTodayFormats();
             
-            console.log('Looking for today\'s date columns:', todayFormats);
+            console.log('Looking for next working day\'s date columns:', nextWorkingDayFormats);
             
-            // First try exact matches
-            for (const format of todayFormats) {
+            for (const format of nextWorkingDayFormats) {
                 const index = headers.indexOf(format);
                 if (index !== -1) {
                     console.log(`Found exact date column: "${format}" at index ${index}`);
@@ -823,8 +834,7 @@
                 }
             }
             
-            // Try case-insensitive and trimmed matches
-            for (const format of todayFormats) {
+            for (const format of nextWorkingDayFormats) {
                 const index = headers.findIndex(h => 
                     h && h.toString().trim().toLowerCase() === format.toLowerCase()
                 );
@@ -834,8 +844,7 @@
                 }
             }
             
-            // Try partial matches (header contains the date)
-            for (const format of todayFormats) {
+            for (const format of nextWorkingDayFormats) {
                 const index = headers.findIndex(h => 
                     h && h.toString().includes(format)
                 );
@@ -845,14 +854,13 @@
                 }
             }
             
-            // Fallback to CONFIG.FALLBACK_COLUMN
             const fallbackIndex = headers.indexOf(CONFIG.FALLBACK_COLUMN);
             if (fallbackIndex !== -1) {
                 console.log(`Date column not found, using fallback: "${CONFIG.FALLBACK_COLUMN}"`);
                 return { columnName: CONFIG.FALLBACK_COLUMN, index: fallbackIndex, isFallback: true };
             }
             
-            console.warn('No date column or fallback column found');
+            console.warn('No next working day column or fallback column found');
             return null;
         }
         
@@ -920,11 +928,9 @@
             const str = String(combinedValue).trim();
             if (!str) return { driver: '', group: null };
             
-            // Split by the last colon to handle driver names that might contain colons
             const lastColonIndex = str.lastIndexOf(':');
             
             if (lastColonIndex === -1) {
-                // No colon found - treat entire string as driver with no group
                 return { driver: str, group: null };
             }
             
@@ -935,7 +941,7 @@
             return { driver, group };
         }
         
-        // Parse group from a group string - supports multi-groups and business codes (DD, SS, AA, F)
+        // Parse group from a group string
         function parseGroup(groupValue) {
             if (!groupValue) return null;
             
@@ -943,62 +949,30 @@
             let strValue = originalValue;
             if (!strValue) return null;
             
-            // Remove business codes (DD, SS, AA, F) but keep the group numbers
-            // Business code meanings:
-            // DD = Discount Day
-            // SS = Single Siblings  
-            // AA = (business code)
-            // F = (business code)
-            // 
-            // Supported patterns:
-            // Single groups: 1, 2, 3, 1DD1, 2F2, 3SS3, 1AA1
-            // Two groups: 1&2, 2&3 (with codes: 1DD&2, 2SS&3)
-            // All three groups: 123, 1DD23, 1SS23, 1AA23, 2DD23, 3DD23
-            // Note: Groups 1&3 together always means all three (123)
-            // 
-            // Examples: 3DD3 -> 3, 2F2 -> 2, 1DD&2 -> 12, 1DD23 -> 123
-            
-            // Handle patterns with & first (like 1DD&2, 2SS&3)
             if (strValue.includes('&')) {
-                // Remove business codes from each part
                 const parts = strValue.split('&').map(part => {
-                    // Remove DD, SS, AA, F from each part
                     return part.replace(/DD|SS|AA|F|XX/g, '').trim();
                 });
                 strValue = parts.join('&');
             } else {
-                // Remove business codes more carefully - only when they appear between numbers
-                // This prevents removing F from names like "Fitz"
                 strValue = strValue.replace(/(\d)(DD|SS|AA|F|XX)(\d)/g, '$1$3');
-                // Also handle cases where business code is at the end like "1DD"
                 strValue = strValue.replace(/(\d)(DD|SS|AA|F|XX)$/g, '$1');
             }
             
-            // Debug logging for business codes (only log if different from original)
-            if (strValue !== originalValue && originalValue.match(/DD|SS|AA|F/)) {
-                // Uncomment for debugging: console.log(`Business code parsed: "${originalValue}" -> "${strValue}"`);
-            }
-            
-            // Now parse the cleaned string
-            
-            // Handle patterns like "33" -> "3", "22" -> "2", "11" -> "1"
             if (strValue.match(/^([123])\1$/)) {
                 return parseInt(strValue[0], 10);
             }
             
-            // Handle multi-group combinations with & (only 1&2 or 2&3 are valid)
             if (strValue.includes('&')) {
                 const groups = strValue.split('&')
                     .map(g => g.trim())
                     .filter(g => g.match(/^[123]$/))
                     .sort();
                 if (groups.length === 2) {
-                    // Only valid two-group combinations are 1&2 or 2&3
                     const joined = groups.join('');
                     if (joined === '12' || joined === '23') {
                         return joined;
                     }
-                    // If it's 1&3, treat as all three groups
                     if (joined === '13') {
                         return '123';
                     }
@@ -1007,18 +981,14 @@
                 }
             }
             
-            // Handle combined groups without separators like "12", "23", "123", "13"
             if (strValue.match(/^[123]{2,3}$/)) {
-                // Remove duplicates and sort
                 const uniqueGroups = [...new Set(strValue.split(''))].sort().join('');
-                // If it's "13", treat as all three groups (123)
                 if (uniqueGroups === '13') {
                     return '123';
                 }
                 return uniqueGroups;
             }
             
-            // Handle single groups
             if (strValue.match(/^[123]$/)) {
                 return parseInt(strValue, 10);
             }
@@ -1040,7 +1010,6 @@
                 id = row['Dog ID'].trim();
             } else if (row['Dog Name'] && row['Dog Name'].trim()) {
                 id = row['Dog Name'].trim();
-                // Use the stored _rowIndex instead of indexOf
                 const index = row['_rowIndex'] ?? state.allData.indexOf(row);
                 if (index >= 0) {
                     id = `${id}_${index}`;
@@ -1056,14 +1025,10 @@
 
         // Get row's sheet index (accounting for header row)
         function getSheetRowIndex(row) {
-            // Use the stored _rowIndex if available, otherwise try to find it
             if (row && typeof row['_rowIndex'] === 'number') {
-                // _rowIndex is 0-based from the data rows
-                // Add 2: +1 for header row, +1 for 1-based indexing
                 return row['_rowIndex'] + 2;
             }
             
-            // Fallback: try to find in allData
             const index = state.allData.indexOf(row);
             if (index !== -1) {
                 return index + 2;
@@ -1104,15 +1069,13 @@
             try {
                 const response = await fetch(CONFIG.APPS_SCRIPT_URL, {
                     method: 'POST',
-                    mode: 'no-cors', // Required for Apps Script
+                    mode: 'no-cors',
                     headers: {
-                        'Content-Type': 'text/plain', // Apps Script requires this
+                        'Content-Type': 'text/plain',
                     },
                     body: JSON.stringify(payload)
                 });
                 
-                // Note: With no-cors mode, we can't read the response
-                // But the request will still go through
                 return { success: true };
                 
             } catch (error) {
@@ -1132,7 +1095,6 @@
                     statusEl.innerHTML = '<span class="spinner"></span><span>Testing connection...</span>';
                 }
                 
-                // Test with a GET request first
                 const response = await fetch(CONFIG.APPS_SCRIPT_URL);
                 const text = await response.text();
                 
@@ -1187,10 +1149,8 @@
                 if (row && row[state.activeColumn]) {
                     const columnValue = row[state.activeColumn].trim();
                     
-                    // Skip blank or cancelled entries
                     if (!columnValue || columnValue === '') return;
                     const columnValueLower = columnValue.toLowerCase();
-                    // Check for exact match cancellation patterns
                     if (columnValueLower === 'cancel' || 
                         columnValueLower === 'lmcancel' || 
                         columnValueLower === 'lm cancel' ||
@@ -1208,7 +1168,6 @@
             const newColorMap = {};
             
             sortedDrivers.forEach((driver, index) => {
-                // Keep existing custom colors
                 if (state.customColors[driver]) {
                     newColorMap[driver] = state.customColors[driver];
                 } else if (state.driverColorMap[driver]) {
@@ -1216,7 +1175,6 @@
                 } else if (index < ALL_COLORS.length) {
                     newColorMap[driver] = ALL_COLORS[index];
                 } else {
-                    // Generate a color for drivers beyond the palette
                     let hash = 0;
                     for (let i = 0; i < driver.length; i++) {
                         hash = ((hash << 5) - hash) + driver.charCodeAt(i);
@@ -1235,7 +1193,6 @@
             if (!name || name.trim() === '') return '#999999';
             const trimmedName = name.trim();
             
-            // Special case: Black for unassigned drivers
             if (trimmedName.toLowerCase().includes('unassigned')) {
                 return '#000000';
             }
@@ -1252,28 +1209,41 @@
             showNotification(`Color updated for ${categoryName}`, 'success', 2000);
         }
 
-        // ==================== MARKER CREATION WITH PROPER SHAPES ====================
+        // ==================== MARKER CREATION ====================
+        function createFieldDiamondIcon() {
+            const size = 24;
+            const strokeColor = '#666666';
+            const strokeWidth = 2;
+            const fillColor = '#000000';
+            
+            return L.divIcon({
+                html: `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3));">
+                    <path d="M${size/2} 2 L${size-2} ${size/2} L${size/2} ${size-2} L2 ${size/2} Z" 
+                          fill="${fillColor}" stroke="${strokeColor}" stroke-width="${strokeWidth}"/>
+                </svg>`,
+                className: 'custom-field-diamond-marker',
+                iconSize: [size, size],
+                iconAnchor: [size/2, size/2]
+            });
+        }
+        
         function createMarkerIcon(color, isSelected = false, markerType = 'circle', group = null, isInSelection = false, dogName = null, hasCallout = false) {
-            // Special handling for Park and Field - DIAMONDS
-            if (dogName) {
-                const dogNameLower = dogName.toLowerCase();
-                if (dogNameLower === 'park' || dogNameLower === 'field') {
-                    const isPark = dogNameLower === 'park';
-                    const strokeColor = isInSelection ? '#007bff' : (isSelected ? '#007bff' : '#666666');
-                    const strokeWidth = isSelected ? 3 : (isInSelection ? 3 : 2);
-                    const size = isInSelection ? 28 : 24;
-                    const fillColor = isPark ? '#FFFFFF' : '#000000';  // Park = white, Field = black
-                    
-                    return L.divIcon({
-                        html: `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3)); ${isInSelection ? 'animation: pulse 2s infinite;' : ''}">
-                            <path d="M${size/2} 2 L${size-2} ${size/2} L${size/2} ${size-2} L2 ${size/2} Z" 
-                                  fill="${fillColor}" stroke="${strokeColor}" stroke-width="${strokeWidth}"/>
-                        </svg>`,
-                        className: `custom-diamond-marker ${isInSelection ? 'marker-selected' : ''}`,
-                        iconSize: [size, size],
-                        iconAnchor: [size/2, size/2]
-                    });
-                }
+            // Special handling for Park (white diamond) - keep this for backward compatibility
+            if (dogName && dogName.toLowerCase() === 'park') {
+                const strokeColor = isInSelection ? '#007bff' : (isSelected ? '#007bff' : '#666666');
+                const strokeWidth = isSelected ? 3 : (isInSelection ? 3 : 2);
+                const size = isInSelection ? 28 : 24;
+                const fillColor = '#FFFFFF';
+                
+                return L.divIcon({
+                    html: `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3)); ${isInSelection ? 'animation: pulse 2s infinite;' : ''}">
+                        <path d="M${size/2} 2 L${size-2} ${size/2} L${size/2} ${size-2} L2 ${size/2} Z" 
+                              fill="${fillColor}" stroke="${strokeColor}" stroke-width="${strokeWidth}"/>
+                    </svg>`,
+                    className: `custom-diamond-marker ${isInSelection ? 'marker-selected' : ''}`,
+                    iconSize: [size, size],
+                    iconAnchor: [size/2, size/2]
+                });
             }
             
             color = color || '#999999';
@@ -1357,7 +1327,6 @@
                 
             } catch (error) {
                 console.error('Error creating marker icon:', error);
-                // Fallback to simple circle
                 return L.divIcon({
                     html: `<div style="width: 13px; height: 13px; background-color: #999999; border: 2px solid #000000; border-radius: 50%;"></div>`,
                     className: 'custom-marker-fallback',
@@ -1384,7 +1353,6 @@
                     attributionControl: true
                 });
                 
-                // Using Stamen Toner for high contrast streets
                 const tileUrl = 'https://stamen-tiles.a.ssl.fastly.net/toner/{z}/{x}/{y}.png';
                 
                 console.log('Loading map tiles: Stamen Toner (High contrast for clear streets)');
@@ -1399,14 +1367,12 @@
                 let fallbackLayer = null;
                 let tileLoadTimeout = null;
                 
-                // Check if tiles are loading after 5 seconds
                 tileLoadTimeout = setTimeout(() => {
                     const tiles = document.querySelectorAll('.leaflet-tile');
                     if (tiles.length === 0 && !fallbackLayer) {
                         console.warn('No tiles loaded - switching to fallback');
                         showNotification('Stamen server not responding, trying fallback...', 'info');
                         
-                        // Try CartoDB Positron as fallback
                         fallbackLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
                             attribution: '© OpenStreetMap contributors © CARTO',
                             maxZoom: 19
@@ -1418,13 +1384,11 @@
                 
                 tileLayer.on('tileerror', function(error) {
                     console.error('Tile load error:', error);
-                    // Clear the timeout if we're switching to fallback
                     if (tileLoadTimeout) {
                         clearTimeout(tileLoadTimeout);
                         tileLoadTimeout = null;
                     }
                     
-                    // Fallback to CartoDB if Stamen fails
                     if (!fallbackLayer) {
                         console.log('Switching to fallback map provider (CartoDB Positron)...');
                         fallbackLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
@@ -1438,7 +1402,6 @@
                 });
                 
                 tileLayer.on('tileload', function() {
-                    // Clear timeout on successful load
                     if (tileLoadTimeout) {
                         clearTimeout(tileLoadTimeout);
                         tileLoadTimeout = null;
@@ -1447,7 +1410,6 @@
                 
                 tileLayer.addTo(state.map);
                 
-                // Check if tiles are loading after a short delay
                 setTimeout(() => {
                     const tiles = document.querySelectorAll('.leaflet-tile');
                     const loadedTiles = document.querySelectorAll('.leaflet-tile-loaded');
@@ -1472,6 +1434,177 @@
             } catch (error) {
                 console.error('Error initializing map:', error);
                 showNotification('Failed to initialize map. Please refresh the page.', 'error', 0);
+            }
+        }
+
+        // ==================== LOAD FIELDS DATA ====================
+        async function loadFieldsData() {
+            try {
+                if (!CONFIG.SHEET_ID || !CONFIG.API_KEY) {
+                    console.log('No fields data - Sheet ID or API key not configured');
+                    return;
+                }
+                
+                const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SHEET_ID}/values/${CONFIG.FIELDS_WORKSHEET_NAME}?key=${CONFIG.API_KEY}`;
+                
+                console.log(`Loading fields data from tab: "${CONFIG.FIELDS_WORKSHEET_NAME}"`);
+                
+                const response = await fetch(url);
+                
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        console.log('Fields tab not found - this is optional');
+                        return;
+                    }
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                if (!data || !data.values || data.values.length < 2) {
+                    console.log('No data in Fields tab');
+                    return;
+                }
+                
+                const headers = data.values[0];
+                const rows = data.values.slice(1);
+                
+                console.log('Fields tab headers:', headers);
+                
+                // Validate required columns
+                const requiredColumns = ['Field Name', 'Latitude', 'Longitude'];
+                const missingColumns = requiredColumns.filter(col => !headers.includes(col));
+                
+                if (missingColumns.length > 0) {
+                    console.warn(`Fields tab missing columns: ${missingColumns.join(', ')}`);
+                    return;
+                }
+                
+                // Process fields data
+                const processedFields = [];
+                let validFields = 0;
+                
+                rows.forEach((row, index) => {
+                    try {
+                        const obj = {};
+                        headers.forEach((header, headerIndex) => {
+                            obj[header] = row[headerIndex] || '';
+                        });
+                        
+                        if (!obj['Field Name'] || obj['Field Name'].trim() === '') {
+                            return;
+                        }
+                        
+                        const lat = parseFloat(obj['Latitude']);
+                        const lng = parseFloat(obj['Longitude']);
+                        
+                        if (!validateCoordinates(lat, lng)) {
+                            return;
+                        }
+                        
+                        obj['_lat'] = lat;
+                        obj['_lng'] = lng;
+                        
+                        processedFields.push(obj);
+                        validFields++;
+                        
+                    } catch (rowError) {
+                        console.warn(`Error processing field row ${index + 2}:`, rowError);
+                    }
+                });
+                
+                state.fieldsData = processedFields;
+                
+                if (validFields > 0) {
+                    console.log(`Loaded ${validFields} field locations`);
+                    updateFieldsDisplay();
+                    addFieldMarkers();
+                }
+                
+            } catch (error) {
+                console.error('Error loading fields data:', error);
+                // This is optional data, so don't show error to user
+            }
+        }
+
+        // ==================== ADD FIELD MARKERS ====================
+        function addFieldMarkers() {
+            // Clear existing field markers
+            state.fieldMarkers.forEach(marker => {
+                if (marker && state.map.hasLayer(marker)) {
+                    state.map.removeLayer(marker);
+                }
+            });
+            state.fieldMarkers = [];
+            
+            if (!state.fieldsData || state.fieldsData.length === 0) {
+                return;
+            }
+            
+            state.fieldsData.forEach(field => {
+                try {
+                    const lat = field['_lat'] ?? parseFloat(field['Latitude']);
+                    const lng = field['_lng'] ?? parseFloat(field['Longitude']);
+                    
+                    if (!validateCoordinates(lat, lng)) return;
+                    
+                    const marker = L.marker([lat, lng], {
+                        icon: createFieldDiamondIcon(),
+                        riseOnHover: true
+                    });
+                    
+                    // Create tooltip for field
+                    const fieldName = field['Field Name'] || 'Unknown Field';
+                    const notes = field['Notes'] || '';
+                    
+                    let tooltipHtml = `<div style="text-align: center;"><strong>${escapeHtml(fieldName)}</strong>`;
+                    if (notes) {
+                        tooltipHtml += `<br/><span style="font-style: italic;">${escapeHtml(notes)}</span>`;
+                    }
+                    tooltipHtml += `</div>`;
+                    
+                    marker.bindTooltip(tooltipHtml, {
+                        permanent: false,
+                        direction: 'top',
+                        offset: [0, -12],
+                        className: 'field-marker-tooltip',
+                        opacity: 0.95
+                    });
+                    
+                    // Add marker to map
+                    marker.addTo(state.map);
+                    
+                    // Field markers are not editable, so no click handler for editing
+                    
+                    state.fieldMarkers.push(marker);
+                    
+                } catch (error) {
+                    console.warn('Error creating field marker:', error);
+                }
+            });
+        }
+
+        // ==================== UPDATE FIELDS DISPLAY ====================
+        function updateFieldsDisplay() {
+            const fieldsSection = document.getElementById('fieldsSection');
+            const fieldsContent = document.getElementById('fieldsContent');
+            
+            if (!fieldsSection || !fieldsContent) return;
+            
+            if (state.fieldsData && state.fieldsData.length > 0) {
+                fieldsSection.style.display = 'block';
+                
+                const fieldsHtml = state.fieldsData.map(field => {
+                    const fieldName = escapeHtml(field['Field Name'] || 'Unknown');
+                    return `<div class="field-item">
+                        <div class="field-diamond"></div>
+                        <span>${fieldName}</span>
+                    </div>`;
+                }).join('');
+                
+                fieldsContent.innerHTML = fieldsHtml || '<div class="no-selection">No fields found</div>';
+            } else {
+                fieldsSection.style.display = 'none';
             }
         }
 
@@ -1511,11 +1644,11 @@
                 
                 console.log('Headers from Google Sheet:', headers);
                 
-                // Find today's date column or fallback
+                // Find next working day's date column or fallback
                 const dateColumnInfo = findDateColumn(headers);
                 
                 if (!dateColumnInfo) {
-                    throw new Error('No date column found for today and no fallback column available');
+                    throw new Error('No next working day column found and no fallback column available');
                 }
                 
                 state.activeColumn = dateColumnInfo.columnName;
@@ -1525,13 +1658,23 @@
                 if (dateColumnInfo.isFallback) {
                     showNotification(`Using fallback column: ${state.activeColumn}`, 'warning');
                 } else {
-                    showNotification(`Using today's schedule: ${state.activeColumn}`, 'success');
+                    showNotification(`Using next working day schedule: ${state.activeColumn}`, 'success');
                 }
                 
                 // Update the UI to show which column is active
                 const columnInfo = document.getElementById('columnInfo');
                 if (columnInfo) {
                     columnInfo.textContent = state.activeColumn;
+                }
+                
+                // Update the header to show the actual next working day
+                const nextWorkingDayText = document.getElementById('nextWorkingDayText');
+                if (nextWorkingDayText && !dateColumnInfo.isFallback) {
+                    const nextWorkingDay = getNextWorkingDay(new Date());
+                    const dayName = getDayName(nextWorkingDay.getDay());
+                    const month = nextWorkingDay.getMonth() + 1;
+                    const day = nextWorkingDay.getDate();
+                    nextWorkingDayText.textContent = `${dayName.toUpperCase()} ${month}/${day}`;
                 }
                 
                 // Validate required columns
@@ -1576,7 +1719,6 @@
                                 blankCount++;
                             } else {
                                 const columnValueLower = columnValue.toLowerCase();
-                                // Check for exact match cancellation patterns
                                 if (columnValueLower === 'cancel' || 
                                     columnValueLower === 'lmcancel' || 
                                     columnValueLower === 'lm cancel' ||
@@ -1591,7 +1733,7 @@
                         
                         obj['_lat'] = lat;
                         obj['_lng'] = lng;
-                        obj['_rowIndex'] = index;  // Store the original row index (0-based, excluding header)
+                        obj['_rowIndex'] = index;
                         
                         processedData.push(obj);
                         validRows++;
@@ -1627,6 +1769,9 @@
                 assignDriverColors();
                 updateMap();
                 
+                // Load fields data after main data
+                loadFieldsData();
+                
             } catch (error) {
                 console.error('Data loading error:', error);
                 showNotification('Error loading data: ' + error.message, 'error');
@@ -1642,7 +1787,7 @@
         // ==================== MAP UPDATE ====================
         function updateMap() {
             try {
-                // Clear existing markers
+                // Clear existing markers (but not field markers)
                 state.markers.forEach(m => {
                     if (m && m.marker) {
                         try {
@@ -1670,23 +1815,20 @@
                 state.filteredData = state.allData.filter(row => {
                     if (!row) return false;
                     
-                    // Check if the active column value is blank or contains Cancel/LMCancel
                     const columnValue = state.activeColumn ? row[state.activeColumn] : '';
                     if (!columnValue || columnValue.trim() === '') {
-                        return false; // Skip if blank
+                        return false;
                     }
                     
                     const columnValueLower = columnValue.toLowerCase().trim();
-                    // Check for various cancellation patterns (exact match)
                     if (columnValueLower === 'cancel' || 
                         columnValueLower === 'lmcancel' || 
                         columnValueLower === 'lm cancel' ||
                         columnValueLower === 'cancelled' ||
                         columnValueLower === 'lm cancelled') {
-                        return false; // Skip if it's a cancellation
+                        return false;
                     }
                     
-                    // Get driver and group from active column
                     const { driver, group } = parseCombined(columnValue);
                     
                     // Search filter
@@ -1707,19 +1849,16 @@
                     // Group filter
                     if (group !== null) {
                         if (typeof group === 'string' && group.length > 1) {
-                            // Multi-group: check if any active group is in the combination
                             const hasActiveGroup = group.split('').some(g => state.activeGroups.includes(parseInt(g)));
                             if (!hasActiveGroup) {
                                 return false;
                             }
                         } else if (typeof group === 'number') {
-                            // Single group
                             if (!state.activeGroups.includes(group)) {
                                 return false;
                             }
                         }
                     } else {
-                        // If no valid group, filter out when group filters are active
                         if (state.activeGroups.length < 3) {
                             return false;
                         }
@@ -1741,10 +1880,8 @@
                     if (row && state.activeColumn && row[state.activeColumn]) {
                         const columnValue = row[state.activeColumn].trim();
                         
-                        // Skip blank or cancelled entries
                         if (!columnValue || columnValue === '') return;
                         const columnValueLower = columnValue.toLowerCase();
-                        // Check for exact match cancellation patterns
                         if (columnValueLower === 'cancel' || 
                             columnValueLower === 'lmcancel' || 
                             columnValueLower === 'lm cancel' ||
@@ -1782,7 +1919,6 @@
                         
                         let color = state.colorMap[driver] || '#999999';
                         
-                        // Special case: Black for unassigned drivers
                         if (driver.toLowerCase().includes('unassigned')) {
                             color = '#000000';
                         }
@@ -1798,7 +1934,6 @@
                                 if (!dataRow || !dataRow[state.activeColumn]) return;
                                 
                                 const dataColumnValue = dataRow[state.activeColumn].trim();
-                                // Skip blank or cancelled entries
                                 if (!dataColumnValue || dataColumnValue === '') return;
                                 const dataColumnValueLower = dataColumnValue.toLowerCase();
                                 if (dataColumnValueLower === 'cancel' || 
@@ -1810,12 +1945,10 @@
                                 const { driver: dataDriver, group: dataGroup } = parseCombined(dataColumnValue);
                                 if (dataDriver !== driver) return;
                                 
-                                // Get the number of dogs (default to 1 if not specified)
                                 const dogCount = parseInt(dataRow['Number of Dogs'] || '1') || 1;
                                 
                                 if (dataGroup !== null) {
                                     if (typeof dataGroup === 'string' && dataGroup.length > 1) {
-                                        // Multi-group: split and add to each
                                         dataGroup.split('').forEach(g => {
                                             const groupNum = parseInt(g);
                                             if (groupNum >= 1 && groupNum <= 3) {
@@ -1823,27 +1956,24 @@
                                             }
                                         });
                                     } else if (typeof dataGroup === 'number' && dataGroup >= 1 && dataGroup <= 3) {
-                                        // Single group
                                         driverGroupCounts[dataGroup] += dogCount;
                                     }
                                 }
                             });
                         }
                         
-                        // Format tooltip as "Driver:Group" then dog name on new line, with count if available, and notes if present
+                        // Format tooltip
                         const driverDisplay = driver || 'No Driver';
                         const groupDisplay = group ? (row[state.activeColumn] ? row[state.activeColumn].split(':')[1] : group) : '?';
                         const dogNameDisplay = row['Dog Name'] || 'Unknown';
                         const countValue = row['Count'] || '';
                         const notesValue = row['Notes'] || '';
                         
-                        // Build tooltip with count included if present
                         let tooltipHtml = `<div style="text-align: center;"><strong>${escapeHtml(driverDisplay)}:${escapeHtml(groupDisplay)}</strong>`;
                         if (countValue && countValue.toString().trim() !== '') {
                             tooltipHtml += `  <span style="color: #ff6b6b; font-weight: bold;">(${escapeHtml(countValue)})</span>`;
                         }
                         
-                        // Add driver's group counts
                         const totalDogs = driverGroupCounts[1] + driverGroupCounts[2] + driverGroupCounts[3];
                         if (totalDogs > 0) {
                             tooltipHtml += `<br/><span style="color: #ffd700; font-size: 14px;">${driverGroupCounts[1]}, ${driverGroupCounts[2]}, ${driverGroupCounts[3]}</span>`;
@@ -1851,7 +1981,6 @@
                         
                         tooltipHtml += `<br/>${escapeHtml(dogNameDisplay)}`;
                         
-                        // Add notes if present
                         if (notesValue && notesValue.toString().trim() !== '') {
                             tooltipHtml += `<br/><span style="font-style: italic; color: white;">${escapeHtml(notesValue)}</span>`;
                         }
@@ -1863,19 +1992,16 @@
                             riseOnHover: true
                         });
 
-                        // Add marker to map first
                         marker.addTo(state.map);
                         
-                        // Create and bind tooltip
                         marker.bindTooltip(tooltipHtml, {
                             permanent: false,
                             direction: 'top',
-                            offset: [0, -15],  // Adjusted offset for bigger tooltip
+                            offset: [0, -15],
                             className: 'custom-tooltip',
                             opacity: 0.95
                         });
 
-                        // Store additional data for the marker
                         marker._rowData = row;
                         
                         const { group: markerGroup } = state.activeColumn && row[state.activeColumn] ? 
@@ -1927,6 +2053,9 @@
                 });
 
                 updateLegend();
+                
+                // Re-add field markers (they were cleared in updateMap)
+                addFieldMarkers();
                 
                 // Fit bounds if we have markers
                 if (state.markers.length > 0 && state.markers.length < 100) {
@@ -2232,23 +2361,37 @@
                             ${moreText}
                         </div>
                         <div class="bulk-edit-controls">
-                            <input type="text" id="bulkDriverInput" class="bulk-edit-input" 
-                                   placeholder="Driver:Group (e.g., John:1)"
-                                   title="Format: DriverName:Group"
-                                   autocomplete="off" />
-                            <button class="btn btn-primary" onclick="bulkUpdateSelected()" 
-                                    id="bulkUpdateBtn">💾 Update All</button>
-                            <button class="btn btn-secondary" onclick="clearSelection()">✖️ Cancel</button>
+                            <div style="display: flex; gap: 8px; width: 100%; margin-bottom: 8px;">
+                                <div style="flex: 2;">
+                                    <input type="text" id="bulkDriverInput" class="bulk-edit-input" 
+                                           placeholder="Driver name (e.g., John)"
+                                           title="Driver name for all selected markers"
+                                           autocomplete="off" 
+                                           style="margin: 0;" />
+                                </div>
+                                <div style="flex: 1;">
+                                    <input type="text" id="bulkGroupInput" class="bulk-edit-input" 
+                                           placeholder="Group (e.g., 1)"
+                                           title="Group for all selected markers"
+                                           autocomplete="off" 
+                                           style="margin: 0;" />
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="btn btn-primary" onclick="bulkUpdateSelected()" 
+                                        id="bulkUpdateBtn" style="flex: 1;">💾 Update All</button>
+                                <button class="btn btn-secondary" onclick="clearSelection()" style="flex: 1;">✖️ Cancel</button>
+                            </div>
                         </div>
                         <div style="font-size: 10px; color: #999; margin-top: 5px;">
-                            Format: Driver:Group (e.g., John:1, Mary:2DD2)
+                            Enter driver name and group separately. Both will be combined as "Driver:Group"
                         </div>
                     </div>
                 `;
                 
                 setTimeout(() => {
-                    const input = document.getElementById('bulkDriverInput');
-                    if (input) input.focus();
+                    const driverInput = document.getElementById('bulkDriverInput');
+                    if (driverInput) driverInput.focus();
                 }, 100);
                 
             } catch (error) {
@@ -2339,10 +2482,8 @@
             if (!detailsContent) return;
             
             try {
-                // Use the stored _rowIndex or calculate it
                 const actualIndex = row['_rowIndex'] ?? state.allData.indexOf(row);
                 
-                // Parse current combined value
                 const currentCombined = state.activeColumn ? (row[state.activeColumn] || '') : '';
                 const { driver: currentDriver, group: currentGroup } = parseCombined(currentCombined);
                 
@@ -2354,38 +2495,32 @@
                 
                 let infoHtml = '';
                 
-                // Build the info section
                 infoHtml += `<div style="font-weight: bold; color: #333; margin-bottom: 8px; font-size: 14px; text-align: center; padding: 6px 8px; background: #f8f9fa; border-radius: 4px;">
                     ${escapeHtml(dogName)}
                 </div>`;
                 
-                // Add active column indicator
                 infoHtml += `<div style="text-align: center; margin-bottom: 6px; font-size: 11px; color: #666;">
                     Column: ${escapeHtml(state.activeColumn)}
                 </div>`;
                 
-                // Add Dog ID if present
                 if (dogId) {
                     infoHtml += `<div style="margin-bottom: 6px; font-size: 11px; color: #999; text-align: center;">
                         ID: ${escapeHtml(dogId)}
                     </div>`;
                 }
                 
-                // Add address if present
                 if (address) {
                     infoHtml += `<div style="margin-bottom: 6px; font-size: 12px; color: #666;">
                         ${escapeHtml(address)}
                     </div>`;
                 }
                 
-                // Add capacity if present
                 if (capacity) {
                     infoHtml += `<div style="margin-bottom: 6px; font-size: 12px; color: #666;">
                         <strong>Capacity:</strong> ${escapeHtml(capacity)}
                     </div>`;
                 }
                 
-                // Add callout if present
                 if (callout) {
                     infoHtml += `<div style="background: #fff3cd; padding: 6px; border-radius: 4px; margin-bottom: 6px;">
                         <strong style="color: #856404;">CALLOUT:</strong> 
@@ -2393,22 +2528,40 @@
                     </div>`;
                 }
                 
-                // Add edit section for combined field
+                // Convert group back to display format (show original group string if available)
+                let groupDisplayValue = '';
+                if (currentGroup !== null) {
+                    // Try to extract the original group portion from the combined field
+                    if (currentCombined.includes(':')) {
+                        groupDisplayValue = currentCombined.split(':')[1] || '';
+                    } else {
+                        groupDisplayValue = currentGroup.toString();
+                    }
+                }
+                
                 const detailsHtml = `
                     ${infoHtml}
                     
                     <div style="border-top: 1px solid #dee2e6; padding-top: 8px; margin-top: 8px;">
-                        <label style="font-size: 12px; color: #666; font-weight: 600; display: block; margin-bottom: 4px;">Driver:Group Assignment:</label>
-                        <div style="margin-bottom: 8px;">
-                            <input type="text" id="editCombined" value="${escapeHtml(currentCombined)}" 
-                                   placeholder="Driver:Group (e.g., John:1, Mary:2DD2)"
-                                   title="Format: DriverName:Group. Supports business codes: DD, SS, AA, F"
-                                   style="width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;"
-                                   autocomplete="off">
+                        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                            <div style="flex: 2;">
+                                <label style="font-size: 12px; color: #666; font-weight: 600; display: block; margin-bottom: 4px;">Driver Name:</label>
+                                <input type="text" id="editDriver" value="${escapeHtml(currentDriver || '')}" 
+                                       placeholder="Driver name (e.g., John)"
+                                       style="width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;"
+                                       autocomplete="off">
+                            </div>
+                            <div style="flex: 1;">
+                                <label style="font-size: 12px; color: #666; font-weight: 600; display: block; margin-bottom: 4px;">Group:</label>
+                                <input type="text" id="editGroup" value="${escapeHtml(groupDisplayValue)}" 
+                                       placeholder="Group (e.g., 1, 2DD2)"
+                                       style="width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;"
+                                       autocomplete="off">
+                            </div>
                         </div>
                         
                         <div style="font-size: 10px; color: #999; margin-bottom: 8px;">
-                            Format: DriverName:Group (e.g., John:1, Mary:2DD2, Bob:1&2)
+                            Group examples: 1, 2, 3, 1DD1, 2F2, 1&2, 123
                         </div>
                         
                         <div style="display: flex; gap: 4px;">
@@ -2427,19 +2580,28 @@
                 detailsContent.innerHTML = detailsHtml;
                 
                 setTimeout(() => {
-                    const combinedInput = document.getElementById('editCombined');
+                    const driverInput = document.getElementById('editDriver');
+                    const groupInput = document.getElementById('editGroup');
                     
-                    if (combinedInput) {
-                        combinedInput.focus();
-                        combinedInput.select();
+                    if (driverInput) {
+                        driverInput.focus();
+                        driverInput.select();
                         
-                        combinedInput.addEventListener('keydown', function(e) {
-                            if (e.key === 'Enter') {
-                                e.preventDefault();
-                                saveMarkerData();
-                            } else if (e.key === 'Escape') {
-                                e.preventDefault();
-                                cancelEdit();
+                        // Add keyboard handlers to both fields
+                        [driverInput, groupInput].forEach(input => {
+                            if (input) {
+                                input.addEventListener('keydown', function(e) {
+                                    if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        saveMarkerData();
+                                    } else if (e.key === 'Escape') {
+                                        e.preventDefault();
+                                        cancelEdit();
+                                    } else if (e.key === 'Tab' && input === driverInput) {
+                                        // Tab from driver to group field
+                                        setTimeout(() => groupInput?.focus(), 0);
+                                    }
+                                });
                             }
                         });
                     }
@@ -2468,17 +2630,14 @@
                     
                     // Add group counts for drivers
                     if (state.allData && state.allData.length > 0 && state.activeColumn) {
-                        // Count dogs by group for this driver
                         const groupCounts = { 1: 0, 2: 0, 3: 0 };
                         
                         state.allData.forEach(row => {
                             if (!row || !row[state.activeColumn]) return;
                             
                             const columnValue = row[state.activeColumn].trim();
-                            // Skip blank or cancelled entries
                             if (!columnValue || columnValue === '') return;
                             const columnValueLower = columnValue.toLowerCase();
-                            // Check for exact match cancellation patterns
                             if (columnValueLower === 'cancel' || 
                                 columnValueLower === 'lmcancel' || 
                                 columnValueLower === 'lm cancel' ||
@@ -2488,12 +2647,10 @@
                             const { driver, group } = parseCombined(columnValue);
                             if (driver !== key) return;
                             
-                            // Get the number of dogs (default to 1 if not specified)
                             const dogCount = parseInt(row['Number of Dogs'] || '1') || 1;
                             
                             if (group !== null) {
                                 if (typeof group === 'string' && group.length > 1) {
-                                    // Multi-group: split and add to each
                                     group.split('').forEach(g => {
                                         const groupNum = parseInt(g);
                                         if (groupNum >= 1 && groupNum <= 3) {
@@ -2501,13 +2658,11 @@
                                         }
                                     });
                                 } else if (typeof group === 'number' && group >= 1 && group <= 3) {
-                                    // Single group
                                     groupCounts[group] += dogCount;
                                 }
                             }
                         });
                         
-                        // Only show counts if there are any dogs
                         const total = groupCounts[1] + groupCounts[2] + groupCounts[3];
                         if (total > 0) {
                             displayText += ` (${groupCounts[1]}, ${groupCounts[2]}, ${groupCounts[3]})`;
@@ -2624,17 +2779,30 @@
             }
         }
 
-        // ==================== SAVE FUNCTIONS WITH GOOGLE SHEETS INTEGRATION ====================
+        // ==================== SAVE FUNCTIONS ====================
         async function saveMarkerData() {
-            const editCombinedInput = document.getElementById('editCombined');
+            const editDriverInput = document.getElementById('editDriver');
+            const editGroupInput = document.getElementById('editGroup');
             const saveBtn = document.getElementById('saveBtn');
             
-            if (!editCombinedInput) {
-                showNotification('Error: Edit field not found', 'error');
+            if (!editDriverInput || !editGroupInput) {
+                showNotification('Error: Edit fields not found', 'error');
                 return;
             }
             
-            const newCombinedValue = editCombinedInput.value.trim();
+            const driverValue = editDriverInput.value.trim();
+            const groupValue = editGroupInput.value.trim();
+            
+            // Combine driver and group back into the expected format
+            let newCombinedValue = '';
+            if (driverValue && groupValue) {
+                newCombinedValue = `${driverValue}:${groupValue}`;
+            } else if (driverValue) {
+                newCombinedValue = driverValue; // Just driver, no group
+            } else if (groupValue) {
+                newCombinedValue = `:${groupValue}`; // Just group, no driver (unusual but possible)
+            }
+            // If both are empty, newCombinedValue stays empty
             
             if (!state.selectedRow || !state.activeColumn) {
                 showNotification('Error: No row or column selected', 'error');
@@ -2642,7 +2810,6 @@
             }
 
             try {
-                // Disable save button
                 if (saveBtn) {
                     saveBtn.disabled = true;
                     saveBtn.innerHTML = '⏳ Saving...';
@@ -2650,27 +2817,24 @@
                 
                 const oldCombined = state.selectedRow[state.activeColumn] || '';
                 
-                // Get the correct sheet row index
                 const sheetRowIndex = getSheetRowIndex(state.selectedRow);
                 
                 if (sheetRowIndex === -1) {
                     throw new Error('Could not determine row index');
                 }
                 
-                console.log('Saving to sheet row:', sheetRowIndex, 'column:', state.activeColumn, 'for dog:', state.selectedRow['Dog Name']);
+                console.log('Saving to sheet row:', sheetRowIndex, 'column:', state.activeColumn, 
+                           'driver:', driverValue, 'group:', groupValue, 'combined:', newCombinedValue);
                 
-                // Update local data immediately for responsive UI
                 state.selectedRow[state.activeColumn] = newCombinedValue;
                 
-                // Update the marker's group property and icon
                 const dogId = getDogId(state.selectedRow);
                 const markerData = state.markerLookup.get(dogId);
                 if (markerData) {
+                    // Parse the new combined value to get the processed group
                     const { driver, group } = parseCombined(newCombinedValue);
-                    // Update the group in markerData
                     markerData.group = group;
                     
-                    // Update the marker icon with new shape based on group
                     let color = state.colorMap[driver] || '#999999';
                     
                     if (driver.toLowerCase().includes('unassigned')) {
@@ -2680,19 +2844,15 @@
                     const isInSelection = dogId && state.selectedMarkers.has(dogId);
                     const hasCallout = state.selectedRow['Callout'] && state.selectedRow['Callout'].trim();
                     
-                    // Update marker icon with new group shape
                     const newIcon = createMarkerIcon(color, true, 'group', markerData.group, isInSelection, state.selectedRow['Dog Name'], hasCallout);
                     markerData.marker.setIcon(newIcon);
                 }
                 
-                // Update UI immediately
                 assignDriverColors();
                 updateMap();
                 
-                // Show immediate feedback
                 showNotification('Saving to Google Sheets...', 'info', 1000);
                 
-                // Send to Google Sheets - using dynamic column name
                 const payload = {
                     action: 'updateRow',
                     rowIndex: sheetRowIndex,
@@ -2704,7 +2864,6 @@
                 
                 showNotification('✅ Data updated in Google Sheets!', 'success', 2000);
                 
-                // Re-enable button
                 if (saveBtn) {
                     saveBtn.disabled = false;
                     saveBtn.innerHTML = '💾 Save';
@@ -2714,13 +2873,11 @@
                 console.error('Error in saveMarkerData:', error);
                 showNotification(`Error saving: ${error.message}`, 'error');
                 
-                // Restore button state
                 if (saveBtn) {
                     saveBtn.disabled = false;
                     saveBtn.innerHTML = '💾 Save';
                 }
                 
-                // Revert local changes on error
                 if (state.selectedRow && state.activeColumn && typeof oldCombined !== 'undefined') {
                     state.selectedRow[state.activeColumn] = oldCombined;
                     assignDriverColors();
@@ -2729,7 +2886,6 @@
             }
         }
 
-        // Keep the old function name for backward compatibility, redirect to new one
         async function saveDriverName() {
             return saveMarkerData();
         }
@@ -2740,25 +2896,31 @@
                 return;
             }
             
-            const bulkInput = document.getElementById('bulkDriverInput');
+            const bulkDriverInput = document.getElementById('bulkDriverInput');
+            const bulkGroupInput = document.getElementById('bulkGroupInput');
             const bulkBtn = document.getElementById('bulkUpdateBtn');
             
-            if (!bulkInput || !state.activeColumn) {
+            if (!bulkDriverInput || !bulkGroupInput || !state.activeColumn) {
                 showNotification('Interface not ready. Please try again.', 'error');
                 return;
             }
             
-            const newValue = bulkInput.value.trim();
-            if (!newValue) {
-                showNotification('Please enter a Driver:Group value', 'error');
-                bulkInput.focus();
-                return;
+            const driverValue = bulkDriverInput.value.trim();
+            const groupValue = bulkGroupInput.value.trim();
+            
+            // Combine the values
+            let newCombinedValue = '';
+            if (driverValue && groupValue) {
+                newCombinedValue = `${driverValue}:${groupValue}`;
+            } else if (driverValue) {
+                newCombinedValue = driverValue;
+            } else if (groupValue) {
+                newCombinedValue = `:${groupValue}`;
             }
             
-            // Validate format
-            if (!newValue.includes(':')) {
-                showNotification('Please use format: Driver:Group (e.g., John:1)', 'error');
-                bulkInput.focus();
+            if (!newCombinedValue) {
+                showNotification('Please enter at least a driver name or group', 'error');
+                bulkDriverInput.focus();
                 return;
             }
             
@@ -2787,45 +2949,40 @@
                     return;
                 }
                 
-                if (!confirm(`Update ${validSelectedRows.length} dogs with: "${newValue}"?`)) {
+                if (!confirm(`Update ${validSelectedRows.length} dogs with: "${newCombinedValue}"?`)) {
                     return;
                 }
                 
-                // Disable button
                 if (bulkBtn) {
                     bulkBtn.disabled = true;
                     bulkBtn.innerHTML = '⏳ Updating...';
                 }
                 
-                // Store old values for rollback
                 const oldValues = validSelectedRows.map(row => ({
                     row: row,
                     oldValue: row[state.activeColumn] || ''
                 }));
                 
-                // Update local data immediately for responsive UI
                 validSelectedRows.forEach(row => {
-                    row[state.activeColumn] = newValue;
+                    row[state.activeColumn] = newCombinedValue;
                 });
                 
-                // Update UI immediately
                 assignDriverColors();
                 updateMap();
                 clearSelection();
                 
                 showNotification(`Saving ${validSelectedRows.length} updates to Google Sheets...`, 'info');
                 
-                // Prepare bulk update payload with dynamic column
                 const updates = sheetRowIndices.map(sheetRowIndex => {
                     const updateData = {};
-                    updateData[state.activeColumn] = newValue;
+                    updateData[state.activeColumn] = newCombinedValue;
                     return {
                         rowIndex: sheetRowIndex,
                         updatedData: updateData
                     };
                 });
                 
-                console.log('Bulk updating rows:', sheetRowIndices, 'in column:', state.activeColumn);
+                console.log('Bulk updating rows:', sheetRowIndices, 'with combined value:', newCombinedValue);
                 
                 const payload = {
                     action: 'bulkUpdate',
@@ -2836,7 +2993,6 @@
                 
                 showNotification(`✅ Successfully updated ${validSelectedRows.length} dogs in Google Sheets!`, 'success', 3000);
                 
-                // Re-enable button
                 if (bulkBtn) {
                     bulkBtn.disabled = false;
                     bulkBtn.innerHTML = '💾 Update All';
@@ -2846,13 +3002,11 @@
                 console.error('Bulk update error:', error);
                 showNotification(`Error during bulk update: ${error.message}`, 'error');
                 
-                // Re-enable button
                 if (bulkBtn) {
                     bulkBtn.disabled = false;
                     bulkBtn.innerHTML = '💾 Update All';
                 }
                 
-                // Rollback local changes on error
                 if (oldValues && state.activeColumn) {
                     oldValues.forEach(({row, oldValue}) => {
                         row[state.activeColumn] = oldValue;
@@ -2937,7 +3091,6 @@
                 
                 // Add keyboard shortcuts
                 document.addEventListener('keydown', function(e) {
-                    // Escape key
                     if (e.key === 'Escape') {
                         if (state.selectionMode) {
                             toggleSelectionMode();
@@ -2952,7 +3105,6 @@
                         }
                     }
                     
-                    // Ctrl/Cmd + F for search focus
                     if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
                         e.preventDefault();
                         const searchInput = document.getElementById('searchInput');
@@ -2964,47 +3116,9 @@
                 });
                 
                 console.log('Application initialized successfully');
-                console.log('Google Sheets Write-back Enabled - Dynamic Date Column Support');
-                console.log('Business codes supported: DD (Discount Day), SS (Single Siblings), AA, F');
-                console.log('Data format: Driver:Group (e.g., John:1, Mary:2DD2, Bob:1&2)');
-                console.log('The map will automatically find today\'s date column or use "Combined" as fallback');
-                console.log('Hidden entries: blank, "Cancel", "LMCancel", "LM Cancel", "Cancelled", "LM Cancelled"');
-                console.log('NEW in v2.7: TODAY prominently displayed with active column');
+                console.log('Dog Walking Map v2.8 - With Fields Tab Support (Next Working Day)');
+                console.log('Now loading field locations from the "Fields" tab');
+                console.log('Fields display as black diamonds and are non-editable');
+                console.log('Shows NEXT WORKING DAY schedule instead of today');
                 
             } catch (error) {
-                console.error('Error during application initialization:', error);
-                showNotification('Failed to initialize application', 'error', 0);
-            }
-        }
-
-        // Global functions for onclick handlers
-        window.filterByCategory = filterByCategory;
-        window.clearSelection = clearSelection;
-        window.saveDriverName = saveDriverName;
-        window.saveMarkerData = saveMarkerData;
-        window.cancelEdit = cancelEdit;
-        window.bulkUpdateSelected = bulkUpdateSelected;
-        window.testAppsScriptConnection = testAppsScriptConnection;
-
-        // Global error handler
-        window.addEventListener('error', function(event) {
-            console.error('Global error:', event.error);
-            console.error('Stack:', event.error?.stack);
-            
-            // If error is related to group parsing, provide helpful info
-            if (event.error?.message?.includes('group') || event.error?.message?.includes('Group')) {
-                console.log('Group parsing tip: Supported business codes are DD, SS, AA, F');
-                console.log('Valid patterns: 1, 2, 3, 1DD1, 2F2, 1&2, 1DD&2, 123, 1SS23, etc.');
-            }
-        });
-
-        // Initialize when DOM is ready
-        document.addEventListener('DOMContentLoaded', initializeApp);
-
-        console.log('Dog Walking Map v2.7 - Dynamic Date Column with TODAY Display');
-        console.log('The map automatically finds today\'s date column or uses "Combined" as fallback');
-        console.log('Hidden: blank entries, "Cancel", "LMCancel", "LM Cancel", "Cancelled", "LM Cancelled"');
-        console.log('Displays TODAY prominently with the active column name');
-    </script>
-</body>
-</html>
