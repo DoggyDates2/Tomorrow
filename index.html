@@ -658,7 +658,7 @@
         </div>
         
         <div class="version-indicator">
-            <span class="today-text" id="nextWorkingDayText">NEXT WORKING DAY</span>
+            <span class="today-text">TODAY</span>
             <span class="column-info" id="columnInfo">Loading...</span>
         </div>
     </div>
@@ -768,20 +768,20 @@
 
         // ==================== UTILITY FUNCTIONS ====================
         
-        // Get next working day's date in various formats to match spreadsheet columns
+        // Get today's date in various formats to match spreadsheet columns
         function getTodayFormats() {
             const today = new Date();
-            const nextWorkingDay = getNextWorkingDay(today);
-            const month = nextWorkingDay.getMonth() + 1;
-            const day = nextWorkingDay.getDate();
-            const year = nextWorkingDay.getFullYear();
+            today.setDate(today.getDate() + 1); // ADD THIS LINE - makes it tomorrow
+            const month = today.getMonth() + 1;
+            const day = today.getDate();
+            const year = today.getFullYear();
             
             const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
                                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
             const fullMonthNames = ['January', 'February', 'March', 'April', 'May', 'June',
                                    'July', 'August', 'September', 'October', 'November', 'December'];
-            const monthName = monthNames[nextWorkingDay.getMonth()];
-            const fullMonthName = fullMonthNames[nextWorkingDay.getMonth()];
+            const monthName = monthNames[today.getMonth()];
+            const fullMonthName = fullMonthNames[today.getMonth()];
             
             return [
                 `${monthName} ${day}`,
@@ -796,9 +796,9 @@
                 `${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')}/${String(year).slice(-2)}`,
                 `${month}-${day}-${year}`,
                 `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
-                getDayName(nextWorkingDay.getDay()) + ` ${monthName} ${day}`,
-                getDayName(nextWorkingDay.getDay()) + ` ${month}/${day}`,
-                getDayName(nextWorkingDay.getDay()),
+                getDayName(today.getDay()) + ` ${monthName} ${day}`,
+                getDayName(today.getDay()) + ` ${month}/${day}`,
+                getDayName(today.getDay()),
             ];
         }
         
@@ -807,26 +807,13 @@
             return days[dayIndex];
         }
         
-        // Calculate the next working day (Monday-Friday)
-        function getNextWorkingDay(date) {
-            const nextDay = new Date(date);
-            nextDay.setDate(nextDay.getDate() + 1); // Start with tomorrow
-            
-            // Keep advancing until we hit a weekday (Monday = 1, Friday = 5)
-            while (nextDay.getDay() === 0 || nextDay.getDay() === 6) { // Sunday = 0, Saturday = 6
-                nextDay.setDate(nextDay.getDate() + 1);
-            }
-            
-            return nextDay;
-        }
-        
-        // Find the column that matches the next working day's date
+        // Find the column that matches today's date
         function findDateColumn(headers) {
-            const nextWorkingDayFormats = getTodayFormats();
+            const todayFormats = getTodayFormats();
             
-            console.log('Looking for next working day\'s date columns:', nextWorkingDayFormats);
+            console.log('Looking for today\'s date columns:', todayFormats);
             
-            for (const format of nextWorkingDayFormats) {
+            for (const format of todayFormats) {
                 const index = headers.indexOf(format);
                 if (index !== -1) {
                     console.log(`Found exact date column: "${format}" at index ${index}`);
@@ -834,7 +821,7 @@
                 }
             }
             
-            for (const format of nextWorkingDayFormats) {
+            for (const format of todayFormats) {
                 const index = headers.findIndex(h => 
                     h && h.toString().trim().toLowerCase() === format.toLowerCase()
                 );
@@ -844,7 +831,7 @@
                 }
             }
             
-            for (const format of nextWorkingDayFormats) {
+            for (const format of todayFormats) {
                 const index = headers.findIndex(h => 
                     h && h.toString().includes(format)
                 );
@@ -860,7 +847,7 @@
                 return { columnName: CONFIG.FALLBACK_COLUMN, index: fallbackIndex, isFallback: true };
             }
             
-            console.warn('No next working day column or fallback column found');
+            console.warn('No date column or fallback column found');
             return null;
         }
         
@@ -951,12 +938,12 @@
             
             if (strValue.includes('&')) {
                 const parts = strValue.split('&').map(part => {
-                    return part.replace(/DD|SS|AA|F|XX/g, '').trim();
+                    return part.replace(/DD|SUB|AA|F|XX/g, '').trim();
                 });
                 strValue = parts.join('&');
             } else {
-                strValue = strValue.replace(/(\d)(DD|SS|AA|F|XX)(\d)/g, '$1$3');
-                strValue = strValue.replace(/(\d)(DD|SS|AA|F|XX)$/g, '$1');
+                strValue = strValue.replace(/(\d)(DD|SUB|AA|F|XX)(\d)/g, '$1$3');
+                strValue = strValue.replace(/(\d)(DD|SUB|AA|F|XX)$/g, '$1');
             }
             
             if (strValue.match(/^([123])\1$/)) {
@@ -1644,11 +1631,11 @@
                 
                 console.log('Headers from Google Sheet:', headers);
                 
-                // Find next working day's date column or fallback
+                // Find today's date column or fallback
                 const dateColumnInfo = findDateColumn(headers);
                 
                 if (!dateColumnInfo) {
-                    throw new Error('No next working day column found and no fallback column available');
+                    throw new Error('No date column found for today and no fallback column available');
                 }
                 
                 state.activeColumn = dateColumnInfo.columnName;
@@ -1658,23 +1645,13 @@
                 if (dateColumnInfo.isFallback) {
                     showNotification(`Using fallback column: ${state.activeColumn}`, 'warning');
                 } else {
-                    showNotification(`Using next working day schedule: ${state.activeColumn}`, 'success');
+                    showNotification(`Using today's schedule: ${state.activeColumn}`, 'success');
                 }
                 
                 // Update the UI to show which column is active
                 const columnInfo = document.getElementById('columnInfo');
                 if (columnInfo) {
                     columnInfo.textContent = state.activeColumn;
-                }
-                
-                // Update the header to show the actual next working day
-                const nextWorkingDayText = document.getElementById('nextWorkingDayText');
-                if (nextWorkingDayText && !dateColumnInfo.isFallback) {
-                    const nextWorkingDay = getNextWorkingDay(new Date());
-                    const dayName = getDayName(nextWorkingDay.getDay());
-                    const month = nextWorkingDay.getMonth() + 1;
-                    const day = nextWorkingDay.getDate();
-                    nextWorkingDayText.textContent = `${dayName.toUpperCase()} ${month}/${day}`;
                 }
                 
                 // Validate required columns
@@ -3116,9 +3093,45 @@
                 });
                 
                 console.log('Application initialized successfully');
-                console.log('Dog Walking Map v2.8 - With Fields Tab Support (Next Working Day)');
+                console.log('Dog Walking Map v2.8 - With Fields Tab Support');
                 console.log('Now loading field locations from the "Fields" tab');
                 console.log('Fields display as black diamonds and are non-editable');
-                console.log('Shows NEXT WORKING DAY schedule instead of today');
                 
             } catch (error) {
+                console.error('Error during application initialization:', error);
+                showNotification('Failed to initialize application', 'error', 0);
+            }
+        }
+
+        // Global functions for onclick handlers
+        window.filterByCategory = filterByCategory;
+        window.clearSelection = clearSelection;
+        window.saveDriverName = saveDriverName;
+        window.saveMarkerData = saveMarkerData;
+        window.cancelEdit = cancelEdit;
+        window.bulkUpdateSelected = bulkUpdateSelected;
+        window.testAppsScriptConnection = testAppsScriptConnection;
+
+        // Global error handler
+        window.addEventListener('error', function(event) {
+            console.error('Global error:', event.error);
+            console.error('Stack:', event.error?.stack);
+            
+            // If error is related to group parsing, provide helpful info
+            if (event.error?.message?.includes('group') || event.error?.message?.includes('Group')) {
+                console.log('Group parsing tip: Supported business codes are DD, SUB, AA, F');
+                console.log('Valid patterns: 1, 2, 3, 1DD1, 2F2, 1&2, 1DD&2, 123, 1SUB23, etc.');
+            }
+        });
+
+        // Initialize when DOM is ready
+        document.addEventListener('DOMContentLoaded', initializeApp);
+
+        console.log('Dog Walking Map v2.8 - With Fields Tab Support');
+        console.log('The map automatically finds today\'s date column or uses "Combined" as fallback');
+        console.log('Hidden: blank entries, "Cancel", "LMCancel", "LM Cancel", "Cancelled", "LM Cancelled"');
+        console.log('NEW: Loads field locations from "Fields" tab and displays them as black diamonds');
+        console.log('NEW: Split edit fields - separate Driver Name and Group inputs');
+    </script>
+</body>
+</html>
