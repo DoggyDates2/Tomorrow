@@ -768,10 +768,34 @@
 
         // ==================== UTILITY FUNCTIONS ====================
         
+        // Returns true if the given date is a skipped holiday.
+        // Fixed: New Year's Day (Jan 1), July 4, Christmas (Dec 25).
+        // Floating: Thanksgiving (4th Thursday of November).
+        function isHoliday(date) {
+            const m = date.getMonth() + 1; // 1-12
+            const d = date.getDate();
+
+            if (m === 1 && d === 1) return true;   // New Year's Day
+            if (m === 7 && d === 4) return true;   // Independence Day
+            if (m === 12 && d === 25) return true; // Christmas Day
+
+            // Thanksgiving: 4th Thursday of November.
+            // The 4th Thursday falls on the date where (date - 1) / 7 === 3
+            // among Thursdays. Simpler: it's between the 22nd and 28th.
+            if (m === 11 && date.getDay() === 4 && d >= 22 && d <= 28) return true;
+
+            return false;
+        }
+
         // Get today's date in various formats to match spreadsheet columns
         function getTodayFormats() {
             const today = new Date();
-            today.setDate(today.getDate() + 1); // ADD THIS LINE - makes it tomorrow
+            // Advance to the next business day (skip Sat/Sun and listed holidays).
+            // Fri -> Mon, Sat -> Mon, Sun -> Mon, otherwise next day.
+            today.setDate(today.getDate() + 1);
+            while (today.getDay() === 0 || today.getDay() === 6 || isHoliday(today)) {
+                today.setDate(today.getDate() + 1);
+            }
             const month = today.getMonth() + 1;
             const day = today.getDate();
             const year = today.getFullYear();
@@ -1340,14 +1364,15 @@
             if (!strikeThrough || !icon || !icon.options || !icon.options.html) return;
             
             const sz = (icon.options.iconSize && icon.options.iconSize[0]) ? icon.options.iconSize[0] : 16;
-            
+            const inset = sz * 0.2; // keep the line inside the marker bounds
+
             icon.options.html =
                 `<div style="position:relative;width:${sz}px;height:${sz}px;">` +
                     icon.options.html +
                     `<svg width="${sz}" height="${sz}" viewBox="0 0 ${sz} ${sz}" ` +
-                        `style="position:absolute;top:0;left:0;pointer-events:none;overflow:visible;">` +
-                        `<line x1="-2" y1="${sz}" x2="${sz+2}" y2="0" ` +
-                            `stroke="#ff0000" stroke-width="2.5" stroke-linecap="round"/>` +
+                        `style="position:absolute;top:0;left:0;pointer-events:none;">` +
+                        `<line x1="${inset}" y1="${sz - inset}" x2="${sz - inset}" y2="${inset}" ` +
+                            `stroke="#ff0000" stroke-width="1.5" stroke-linecap="round"/>` +
                     `</svg>` +
                 `</div>`;
         }
