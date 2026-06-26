@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🐕 Dog Walking Map v2.8 - With Fields Support</title>
+    <title>🐕 Dog Walking Map v2.9 - With Fields Support</title>
     
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -908,6 +908,13 @@
             return true;
         }
 
+        // Returns true when the "Grooming" column for this row says "TOMORROW"
+        // (case-insensitive). Blank or any other value returns false.
+        function hasTomorrowFlag(row) {
+            return row && typeof row['Grooming'] === 'string' &&
+                   row['Grooming'].toLowerCase() === 'tomorrow';
+        }
+
         // Parse combined field to extract driver and group
         function parseCombined(combinedValue) {
             if (!combinedValue) return { driver: '', group: null };
@@ -1214,7 +1221,7 @@
             });
         }
         
-        function createMarkerIcon(color, isSelected = false, markerType = 'circle', group = null, isInSelection = false, dogName = null, hasCallout = false) {
+        function createMarkerIcon(color, isSelected = false, markerType = 'circle', group = null, isInSelection = false, dogName = null, hasCallout = false, strikeThrough = false) {
             // Special handling for Park (white diamond) - keep this for backward compatibility
             if (dogName && dogName.toLowerCase() === 'park') {
                 const strokeColor = isInSelection ? '#007bff' : (isSelected ? '#007bff' : '#666666');
@@ -1222,7 +1229,7 @@
                 const size = isInSelection ? 28 : 24;
                 const fillColor = '#FFFFFF';
                 
-                return L.divIcon({
+                const parkIcon = L.divIcon({
                     html: `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3)); ${isInSelection ? 'animation: pulse 2s infinite;' : ''}">
                         <path d="M${size/2} 2 L${size-2} ${size/2} L${size/2} ${size-2} L2 ${size/2} Z" 
                               fill="${fillColor}" stroke="${strokeColor}" stroke-width="${strokeWidth}"/>
@@ -1231,6 +1238,9 @@
                     iconSize: [size, size],
                     iconAnchor: [size/2, size/2]
                 });
+                
+                applyStrikeThrough(parkIcon, strikeThrough);
+                return parkIcon;
             }
             
             color = color || '#999999';
@@ -1310,6 +1320,7 @@
                     });
                 }
                 
+                applyStrikeThrough(icon, strikeThrough);
                 return icon;
                 
             } catch (error) {
@@ -1321,6 +1332,24 @@
                     iconAnchor: [8, 8]
                 });
             }
+        }
+
+        // Overlays a single red diagonal line on top of a marker's icon HTML.
+        // Used when the row's "Grooming" column says "TOMORROW".
+        function applyStrikeThrough(icon, strikeThrough) {
+            if (!strikeThrough || !icon || !icon.options || !icon.options.html) return;
+            
+            const sz = (icon.options.iconSize && icon.options.iconSize[0]) ? icon.options.iconSize[0] : 16;
+            
+            icon.options.html =
+                `<div style="position:relative;width:${sz}px;height:${sz}px;">` +
+                    icon.options.html +
+                    `<svg width="${sz}" height="${sz}" viewBox="0 0 ${sz} ${sz}" ` +
+                        `style="position:absolute;top:0;left:0;pointer-events:none;overflow:visible;">` +
+                        `<line x1="-2" y1="${sz}" x2="${sz+2}" y2="0" ` +
+                            `stroke="#ff0000" stroke-width="2.5" stroke-linecap="round"/>` +
+                    `</svg>` +
+                `</div>`;
         }
 
         // ==================== MAP INITIALIZATION ====================
@@ -1965,7 +1994,7 @@
                         tooltipHtml += `</div>`;
                         
                         const marker = L.marker([offsetLat, offsetLng], {
-                            icon: createMarkerIcon(color, false, 'group', group, isInSelection, row['Dog Name'], hasCallout),
+                            icon: createMarkerIcon(color, false, 'group', group, isInSelection, row['Dog Name'], hasCallout, hasTomorrowFlag(row)),
                             riseOnHover: true
                         });
 
@@ -2284,7 +2313,7 @@
                         color = '#000000';
                     }
                     
-                    const newIcon = createMarkerIcon(color, isSelected, 'group', group, isInSelection, markerData.row['Dog Name'], markerData.row['Callout'] && markerData.row['Callout'].trim());
+                    const newIcon = createMarkerIcon(color, isSelected, 'group', group, isInSelection, markerData.row['Dog Name'], markerData.row['Callout'] && markerData.row['Callout'].trim(), hasTomorrowFlag(markerData.row));
                     markerData.marker.setIcon(newIcon);
                 } catch (error) {
                     console.error('Error updating marker display:', error);
@@ -2416,7 +2445,7 @@
                             
                             const dogId = getDogId(prevData.row);
                             const isInSelection = dogId && state.selectedMarkers.has(dogId);
-                            state.selectedMarker.setIcon(createMarkerIcon(color, false, 'group', prevGroup, isInSelection, prevData.row['Dog Name'], prevData.row['Callout'] && prevData.row['Callout'].trim()));
+                            state.selectedMarker.setIcon(createMarkerIcon(color, false, 'group', prevGroup, isInSelection, prevData.row['Dog Name'], prevData.row['Callout'] && prevData.row['Callout'].trim(), hasTomorrowFlag(prevData.row)));
                         } catch (clearError) {
                             console.warn('Error clearing previous marker:', clearError);
                         }
@@ -2440,7 +2469,7 @@
                     
                     const dogId = getDogId(row);
                     const isInSelection = dogId && state.selectedMarkers.has(dogId);
-                    marker.setIcon(createMarkerIcon(color, true, 'group', group, isInSelection, row['Dog Name'], row['Callout'] && row['Callout'].trim()));
+                    marker.setIcon(createMarkerIcon(color, true, 'group', group, isInSelection, row['Dog Name'], row['Callout'] && row['Callout'].trim(), hasTomorrowFlag(row)));
                 } catch (iconError) {
                     console.warn('Error updating marker icon:', iconError);
                 }
@@ -2821,7 +2850,7 @@
                     const isInSelection = dogId && state.selectedMarkers.has(dogId);
                     const hasCallout = state.selectedRow['Callout'] && state.selectedRow['Callout'].trim();
                     
-                    const newIcon = createMarkerIcon(color, true, 'group', markerData.group, isInSelection, state.selectedRow['Dog Name'], hasCallout);
+                    const newIcon = createMarkerIcon(color, true, 'group', markerData.group, isInSelection, state.selectedRow['Dog Name'], hasCallout, hasTomorrowFlag(state.selectedRow));
                     markerData.marker.setIcon(newIcon);
                 }
                 
@@ -3093,9 +3122,10 @@
                 });
                 
                 console.log('Application initialized successfully');
-                console.log('Dog Walking Map v2.8 - With Fields Tab Support');
+                console.log('Dog Walking Map v2.9 - With Fields Tab Support');
                 console.log('Now loading field locations from the "Fields" tab');
                 console.log('Fields display as black diamonds and are non-editable');
+                console.log('NEW: Red strike-through line on markers when "Grooming" column says TOMORROW');
                 
             } catch (error) {
                 console.error('Error during application initialization:', error);
@@ -3127,11 +3157,12 @@
         // Initialize when DOM is ready
         document.addEventListener('DOMContentLoaded', initializeApp);
 
-        console.log('Dog Walking Map v2.8 - With Fields Tab Support');
+        console.log('Dog Walking Map v2.9 - With Fields Tab Support');
         console.log('The map automatically finds today\'s date column or uses "Combined" as fallback');
         console.log('Hidden: blank entries, "Cancel", "LMCancel", "LM Cancel", "Cancelled", "LM Cancelled"');
         console.log('NEW: Loads field locations from "Fields" tab and displays them as black diamonds');
         console.log('NEW: Split edit fields - separate Driver Name and Group inputs');
+        console.log('NEW: Red strike-through line on markers when "Grooming" column says TOMORROW');
     </script>
 </body>
 </html>
