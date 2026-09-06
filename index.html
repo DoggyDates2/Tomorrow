@@ -726,7 +726,7 @@
             API_KEY: 'AIzaSyAGLteYp1k98SZo0FMClRgBX0LBsgpMxqI',
             APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbyAIZavcGcPhKH8WC6Ynop5NESF5sE2eyePubRoqebSbj3sbPxr4BMp-eYD81-th7cstQ/exec',
             TILE_PROVIDER: 'carto', // 'carto' (free key), 'stadia' (paid, Stamen Toner), or 'osm' (no key)
-            TILE_API_KEY: 'PASTE_YOUR_CARTO_KEY_HERE', // <-- paste key here
+            TILE_API_KEY: 'cb1_2vkr_1_cb64ab641c4e0cec7ba0723c', // <-- paste key here
             DEFAULT_LAT: 42.2968,
             DEFAULT_LNG: -71.2636,
             DEFAULT_ZOOM: 11,
@@ -1557,6 +1557,7 @@
                 });
                 
                 tileLayer.addTo(state.map);
+                state.map.on('zoomend', applyFieldArrows);
 
                 
                 setTimeout(() => {
@@ -2013,6 +2014,7 @@
                 // Patch the tooltips in place rather than calling updateMap(), which
                 // would rebuild every dog marker and drop any active selection.
                 refreshDogTooltipsWithStaff();
+                applyFieldArrows();
                 addStaffMarkers(true);
             } catch (error) {
                 console.error('Error loading Staff tab:', error);
@@ -2153,6 +2155,55 @@
 
         // Patches the F:/P: line into tooltips of markers already on the map,
         // without recreating them, so selection and edit state survive.
+        // Small triangle on the edge of each dog marker pointing toward that
+        // driver's field. Appended to the marker's rendered element rather than
+        // baked into createMarkerIcon(), so the dog icon code is never touched --
+        // if any of this fails the dog is exactly as it was.
+        function applyFieldArrows() {
+            if (!state.map) return;
+
+            state.markers.forEach(m => {
+                try {
+                    const marker = m && m.marker;
+                    if (!marker || typeof marker.getElement !== 'function') return;
+                    const el = marker.getElement();
+                    if (!el) return;
+
+                    const existing = el.querySelector('.field-arrow');
+                    if (existing) existing.remove();
+
+                    const entry = state.staffByDriver.get(String(marker._tooltipDriver || '').trim());
+                    if (!entry) return;
+                    const field = state.locationsMap.get(entry.fieldId);
+                    if (!field) return;
+
+                    // Bearing in screen space, so it matches what the eye sees.
+                    const here = state.map.latLngToLayerPoint(marker.getLatLng());
+                    const there = state.map.latLngToLayerPoint(L.latLng(field.lat, field.lng));
+                    const dx = there.x - here.x;
+                    const dy = there.y - here.y;
+                    if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return; // sitting on it
+
+                    const deg = Math.atan2(dx, -dy) * 180 / Math.PI;
+
+                    el.style.overflow = 'visible';
+                    const arrow = document.createElement('div');
+                    arrow.className = 'field-arrow';
+                    arrow.style.cssText =
+                        'position:absolute; left:50%; top:50%; width:0; height:0;'
+                        + 'pointer-events:none; z-index:400;'
+                        + `transform:translate(-50%,-50%) rotate(${deg.toFixed(1)}deg);`;
+                    arrow.innerHTML =
+                        '<div style="position:absolute; left:-3px; top:-15px; width:0; height:0;'
+                        + 'border-left:3px solid transparent; border-right:3px solid transparent;'
+                        + 'border-bottom:5px solid rgba(0,0,0,0.55);"></div>';
+                    el.appendChild(arrow);
+                } catch (error) {
+                    /* an arrow is decoration; never let it bubble */
+                }
+            });
+        }
+
         function refreshDogTooltipsWithStaff() {
             state.markers.forEach(m => {
                 try {
@@ -2818,8 +2869,12 @@
                 // staff layer is allowed to interrupt drawing them.
                 try {
                     addStaffMarkers();
+                    // updateMap() rebuilds the dog markers from scratch, which wipes
+                    // the VAN tag, the F:/P: lines and the arrows. Re-apply them.
+                    refreshDogTooltipsWithStaff();
+                    applyFieldArrows();
                 } catch (staffError) {
-                    console.warn('Staff markers failed; dogs unaffected:', staffError);
+                    console.warn('Staff overlay failed; dogs unaffected:', staffError);
                 }
                 
                 // Fit bounds if we have markers
