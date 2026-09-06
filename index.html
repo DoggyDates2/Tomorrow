@@ -2035,17 +2035,35 @@
             // A diamond only reaches full width at its midpoint, so it needs more
             // room per band than a square does.
             const perBand = isParking ? 5 : 7;
-            const size = Math.min(44, Math.max(24, 10 + list.length * perBand));
+            const spanCount = isParking
+                ? Math.ceil(list.length / (list.length <= 4 ? 1 : (list.length <= 8 ? 2 : 3)))
+                : list.length;
+            const size = Math.min(44, Math.max(24, 10 + spanCount * perBand));
 
             const shape = isParking
                 ? `M4 ${size - 4} L4 4 L${size - 4} 4 L${size - 4} ${size - 4} Z`
                 : `M${size / 2} 2 L${size - 2} ${size / 2} L${size / 2} ${size - 2} L2 ${size / 2} Z`;
 
             const clipId = `staffclip${++staffIconSeq}`;
-            const bandWidth = size / list.length;
-            const bands = list.map((c, i) =>
-                `<rect x="${(i * bandWidth).toFixed(2)}" y="0" width="${bandWidth.toFixed(2)}" height="${size}" fill="${c}"/>`
-            ).join('');
+
+            // Past 4 drivers a square stacks its colours into rows instead of
+            // getting wider, so a busy lot stays compact. Diamonds keep single
+            // columns -- a grid would clip badly against the tapering sides.
+            const rows = (!isParking || list.length <= 4) ? 1 : (list.length <= 8 ? 2 : 3);
+            const cols = Math.ceil(list.length / rows);
+
+            const cells = [];
+            const cellH = size / rows;
+            for (let r = 0; r < rows; r++) {
+                const inRow = list.slice(r * cols, (r + 1) * cols);
+                // A short final row stretches to fill, so there's never a blank gap.
+                const cellW = size / inRow.length;
+                inRow.forEach((c, i) => {
+                    cells.push(`<rect x="${(i * cellW).toFixed(2)}" y="${(r * cellH).toFixed(2)}" ` +
+                               `width="${cellW.toFixed(2)}" height="${cellH.toFixed(2)}" fill="${c}"/>`);
+                });
+            }
+            const bands = cells.join('');
 
             const letter = (isParking && list.length === 1)
                 ? `<text x="${size / 2}" y="${size / 2 + 4}" text-anchor="middle" font-size="12"
