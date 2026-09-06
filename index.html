@@ -2189,29 +2189,38 @@
         function buildStaffTooltip(spot) {
             const title = locationLabel(spot.id, '') || spot.id;
 
-            const names = spot.drivers
-                .map(d => d.driver)
-                .sort((a, b) => a.localeCompare(b));
+            // Two names per line, each in that driver's own colour.
+            const nameBlock = (drivers) => {
+                const names = drivers.map(d => d.driver).sort((a, b) => a.localeCompare(b));
+                const lines = [];
+                for (let i = 0; i < names.length; i += 2) {
+                    const pair = names.slice(i, i + 2);
+                    const trailing = (i + 2 < names.length) ? ',' : '';
+                    lines.push(pair.map((n, j) =>
+                        `<span style="${driverTextStyle(getDriverColor(n))}">${escapeHtml(n)}</span>`
+                        + (j === 0 && pair.length > 1 ? ',' : '')
+                    ).join(' ') + trailing);
+                }
+                return lines.map(l => `<div style="white-space:nowrap;">${l}</div>`).join('');
+            };
 
-            // Two per line, each in that driver's own colour.
-            const lines = [];
-            for (let i = 0; i < names.length; i += 2) {
-                const pair = names.slice(i, i + 2);
-                const trailing = (i + 2 < names.length) ? ',' : '';
-                lines.push(pair.map((n, j) =>
-                    `<span style="${driverTextStyle(getDriverColor(n))}">${escapeHtml(n)}</span>`
-                    + (j === 0 && pair.length > 1 ? ',' : '')
-                ).join(' ') + trailing);
+            const body = `<div style="margin-top:3px;font-size:12px;font-weight:600;line-height:1.35;">`;
+            let html = `<div style="text-align:center;">
+                            <div style="font-weight:700;font-size:14px;">${escapeHtml(title)}</div>`;
+
+            if (spot.fieldDrivers.length) {
+                html += body + nameBlock(spot.fieldDrivers) + `</div>`;
             }
 
-            const body = lines
-                .map(line => `<div style="white-space:nowrap;">${line}</div>`)
-                .join('');
+            if (spot.parkingDrivers.length) {
+                // Only label it when it needs distinguishing from the field list above.
+                if (spot.fieldDrivers.length) {
+                    html += `<div style="margin-top:5px;font-size:10px;opacity:.7;font-weight:400;">Parking Here:</div>`;
+                }
+                html += body + nameBlock(spot.parkingDrivers) + `</div>`;
+            }
 
-            return `<div style="text-align:center;">
-                        <div style="font-weight:700;font-size:14px;">${escapeHtml(title)}</div>
-                        <div style="margin-top:3px;font-size:12px;font-weight:600;line-height:1.35;">${body}</div>
-                    </div>`;
+            return html + `</div>`;
         }
 
         function addStaffMarkers(force) {
@@ -2240,35 +2249,50 @@
                 : state.staffData;
             if (visible.length === 0) return;
 
-            // One marker per distinct location, with everyone using it attached.
+            // Grouped by coordinate rather than by ID, because a few parking spots
+            // sit exactly on a field (their Parking ID *is* a field ID). Those
+            // collapse into the single field diamond instead of stacking a
+            // redundant P square on top of it.
             const spots = new Map();
+            const keyFor = loc => `${loc.lat.toFixed(5)},${loc.lng.toFixed(5)}`;
+
             visible.forEach(entry => {
-                [['parking', entry.parkingId], ['field', entry.fieldId]].forEach(([kind, id]) => {
+                [['field', entry.fieldId], ['parking', entry.parkingId]].forEach(([kind, id]) => {
                     if (!id) return;
                     const loc = state.locationsMap.get(id);
                     if (!loc) {
                         console.warn(`No coordinates for location ID "${id}" (${entry.driver})`);
                         return;
                     }
-                    const key = `${kind}|${id}`;
+                    const key = keyFor(loc);
                     if (!spots.has(key)) {
-                        spots.set(key, { kind: kind, id: id, lat: loc.lat, lng: loc.lng, drivers: [] });
+                        spots.set(key, {
+                            id: id, lat: loc.lat, lng: loc.lng,
+                            fieldDrivers: [], parkingDrivers: []
+                        });
                     }
-                    spots.get(key).drivers.push(entry);
+                    const spot = spots.get(key);
+                    if (kind === 'field') {
+                        spot.fieldDrivers.push(entry);
+                        spot.id = id; // prefer the field's own id for the label
+                    } else {
+                        spot.parkingDrivers.push(entry);
+                    }
                 });
             });
 
             spots.forEach(spot => {
                 try {
-                    // Tiny nudge so a driver who parks at their own field still
-                    // gets two separate, clickable markers.
-                    const offset = spot.kind === 'field' ? 0.00035 : -0.00035;
+                    // A spot with anyone walking there is a field; parking-only
+                    // spots keep the black P square.
+                    const isField = spot.fieldDrivers.length > 0;
+                    const colors = spot.fieldDrivers
+                        .slice()
+                        .sort((a, b) => a.driver.localeCompare(b.driver))
+                        .map(d => getDriverColor(d.driver));
 
-                    const marker = L.marker([spot.lat + offset, spot.lng], {
-                        icon: createStaffIcon(spot.kind, spot.drivers
-                            .slice()
-                            .sort((a, b) => a.driver.localeCompare(b.driver))
-                            .map(d => getDriverColor(d.driver))),
+                    const marker = L.marker([spot.lat, spot.lng], {
+                        icon: createStaffIcon(isField ? 'field' : 'parking', colors),
                         riseOnHover: true
                     });
 
