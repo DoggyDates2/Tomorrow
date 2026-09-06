@@ -2024,51 +2024,45 @@
         // driver -- the per-driver detail lives in the tooltip instead.
         let staffIconSeq = 0; // unique clipPath ids so the wedges don't bleed between icons
 
-        // Fields are split into one colour wedge per driver going there, clipped to
-        // the diamond so the silhouette is unchanged. Parking stays solid black --
-        // the white P needs the contrast to stay legible.
+        // Both shapes are split into one colour band per driver, clipped to the
+        // silhouette. A dog marker is always a single colour, so a multi-band square
+        // can only be parking and needs no label. A one-driver parking square is the
+        // ambiguous case -- it could be a Group 3 dog -- so that one keeps its "P".
         function createStaffIcon(kind, colors) {
-            const stroke = '#333333';
-
-            if (kind === 'parking') {
-                const size = 24;
-                return L.divIcon({
-                    html: `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"
-                                style="filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3));">
-                            <rect x="3" y="3" width="${size - 6}" height="${size - 6}" rx="4" ry="4"
-                                  fill="#000000" stroke="#666666" stroke-width="2"/>
-                            <text x="${size / 2}" y="${size / 2 + 4}" text-anchor="middle" font-size="11"
-                                  font-family="sans-serif" font-weight="700" fill="#ffffff">P</text>
-                        </svg>`,
-                    className: 'custom-staff-marker staff-parking',
-                    iconSize: [size, size],
-                    iconAnchor: [size / 2, size / 2]
-                });
-            }
-
-            // Grow the diamond with the crowd so every band keeps a usable width.
-            // A diamond only spans its full width at the vertical midpoint, so bands
-            // need roughly 7px each to stay identifiable.
             const list = (colors && colors.length) ? colors : ['#000000'];
-            const size = Math.min(44, Math.max(24, 10 + list.length * 7));
+            const isParking = kind === 'parking';
 
-            const diamond = `M${size / 2} 2 L${size - 2} ${size / 2} L${size / 2} ${size - 2} L2 ${size / 2} Z`;
-            const clipId = `staffdia${++staffIconSeq}`;
+            // A diamond only reaches full width at its midpoint, so it needs more
+            // room per band than a square does.
+            const perBand = isParking ? 5 : 7;
+            const size = Math.min(44, Math.max(24, 10 + list.length * perBand));
 
-            // Vertical bands across the diamond's bounding box, clipped to shape.
+            const shape = isParking
+                ? `M4 ${size - 4} L4 4 L${size - 4} 4 L${size - 4} ${size - 4} Z`
+                : `M${size / 2} 2 L${size - 2} ${size / 2} L${size / 2} ${size - 2} L2 ${size / 2} Z`;
+
+            const clipId = `staffclip${++staffIconSeq}`;
             const bandWidth = size / list.length;
             const bands = list.map((c, i) =>
                 `<rect x="${(i * bandWidth).toFixed(2)}" y="0" width="${bandWidth.toFixed(2)}" height="${size}" fill="${c}"/>`
             ).join('');
 
+            const letter = (isParking && list.length === 1)
+                ? `<text x="${size / 2}" y="${size / 2 + 4}" text-anchor="middle" font-size="12"
+                         font-family="sans-serif" font-weight="700" fill="#ffffff"
+                         stroke="#000000" stroke-width="2.5" paint-order="stroke">P</text>`
+                : '';
+
             return L.divIcon({
                 html: `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"
-                            style="filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3));">
-                        <defs><clipPath id="${clipId}"><path d="${diamond}"/></clipPath></defs>
+                            style="filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.35));">
+                        <defs><clipPath id="${clipId}"><path d="${shape}"/></clipPath></defs>
                         <g clip-path="url(#${clipId})">${bands}</g>
-                        <path d="${diamond}" fill="none" stroke="${stroke}" stroke-width="2"/>
+                        <path d="${shape}" fill="none" stroke="#333333" stroke-width="2"
+                              stroke-linejoin="round"/>
+                        ${letter}
                     </svg>`,
-                className: 'custom-staff-marker staff-field',
+                className: `custom-staff-marker staff-${kind}`,
                 iconSize: [size, size],
                 iconAnchor: [size / 2, size / 2]
             });
@@ -2286,7 +2280,8 @@
                     // A spot with anyone walking there is a field; parking-only
                     // spots keep the black P square.
                     const isField = spot.fieldDrivers.length > 0;
-                    const colors = spot.fieldDrivers
+                    const banded = isField ? spot.fieldDrivers : spot.parkingDrivers;
+                    const colors = banded
                         .slice()
                         .sort((a, b) => a.driver.localeCompare(b.driver))
                         .map(d => getDriverColor(d.driver));
