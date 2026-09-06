@@ -653,6 +653,7 @@
         </div>
 
         <div class="control-group">
+            <button class="btn btn-secondary" id="toggleStaffBtn">🅿️ Hide Start/End</button>
             <button class="btn btn-secondary" id="resetColorsBtn">🎨 Reset Colors</button>
             <button class="btn btn-info" id="testConnectionBtn">🔌 Test Connection</button>
         </div>
@@ -670,6 +671,11 @@
                     <button class="btn btn-clear" id="showAllBtn" style="width: 100%; padding: 6px 8px; font-size: 12px;">Show All</button>
                 </div>
                 
+                <div id="staffLegendSection" style="display:none; border-bottom:1px solid #e1e5e9; padding-bottom:6px; margin-bottom:8px;">
+                    <h3>Start &amp; End</h3>
+                    <div id="staffLegendContent"></div>
+                </div>
+
                 <h3>Drivers</h3>
                 <div id="legendContent">Loading...</div>
             </div>
@@ -712,9 +718,14 @@
         const CONFIG = Object.freeze({
             SHEET_ID: '1a3xyQvgTqybhQucjsq-g24g4GAnGqV3fOOZktVt9VhU',
             WORKSHEET_NAME: 'Schedule',
-            FIELDS_WORKSHEET_NAME: 'Fields', // New fields tab
+            FIELDS_WORKSHEET_NAME: 'Fields', // Static field list (superseded by the F pins)
+            SHOW_FIELDS_TAB_DIAMONDS: false, // Flip to true to bring the black diamonds back
+            STAFF_WORKSHEET_NAME: 'Staff',
+            STAFF_BLOCK: 1, // 0 = first block (A:H, today), 1 = second block (P:W, tomorrow) // Driver -> Field ID / Parking ID, plus the ID -> lat/lng block from col J over
             API_KEY: 'AIzaSyAGLteYp1k98SZo0FMClRgBX0LBsgpMxqI',
             APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbyAIZavcGcPhKH8WC6Ynop5NESF5sE2eyePubRoqebSbj3sbPxr4BMp-eYD81-th7cstQ/exec',
+            TILE_PROVIDER: 'carto', // 'carto' (free key), 'stadia' (paid, Stamen Toner), or 'osm' (no key)
+            TILE_API_KEY: 'PASTE_YOUR_CARTO_KEY_HERE', // <-- paste key here
             DEFAULT_LAT: 42.2968,
             DEFAULT_LNG: -71.2636,
             DEFAULT_ZOOM: 11,
@@ -746,6 +757,13 @@
             coordinateLookup: new Map(),
             allData: [],
             fieldsData: [], // New: data from Fields tab
+            staffData: [], // Driver assignments from Staff tab
+            locationsMap: new Map(), // Location ID -> {lat, lng, address, name}
+            addressAliases: new Map(), // normalized address -> short display name
+            staffByDriver: new Map(), // driver name -> today's staff row
+            staffRenderKey: null, // guards against needless staff pin rebuilds
+            staffMarkers: [], // Parking + field markers built from Staff tab
+            showStaff: true, // Toggle for parking/field markers
             filteredData: [],
             colorMap: {},
             selectedMarker: null,
@@ -1461,13 +1479,31 @@
                     attributionControl: true
                 });
                 
-                const tileUrl = 'https://stamen-tiles.a.ssl.fastly.net/toner/{z}/{x}/{y}.png';
+                // Basemap: CARTO Positron (free key, 5M tiles/mo) or Stadia's
+                // Stamen Toner Lite (paid). Either way OSM is the keyless fallback.
+                const tileKey = (CONFIG.TILE_API_KEY || '').trim();
+                const provider = tileKey ? CONFIG.TILE_PROVIDER : 'osm';
+
+                let tileUrl, tileAttribution, tileMaxZoom;
+                if (provider === 'carto') {
+                    tileUrl = `https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png?key=${tileKey}`;
+                    tileAttribution = '&copy; OpenStreetMap contributors &copy; CARTO';
+                    tileMaxZoom = 20;
+                } else if (provider === 'stadia') {
+                    tileUrl = `https://tiles.stadiamaps.com/tiles/stamen_toner_lite/{z}/{x}/{y}{r}.png?api_key=${tileKey}`;
+                    tileAttribution = '&copy; Stadia Maps &copy; Stamen Design &copy; OpenStreetMap contributors';
+                    tileMaxZoom = 20;
+                } else {
+                    tileUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+                    tileAttribution = '&copy; OpenStreetMap contributors';
+                    tileMaxZoom = 19;
+                }
                 
-                console.log('Loading map tiles: Stamen Toner (High contrast for clear streets)');
+                console.log(`Loading map tiles: ${provider}`);
                 
                 const tileLayer = L.tileLayer(tileUrl, {
-                    attribution: 'Map tiles by Stamen Design, under CC BY 3.0. Data by OpenStreetMap, under ODbL.',
-                    maxZoom: 19,
+                    attribution: tileAttribution,
+                    maxZoom: tileMaxZoom,
                     minZoom: 2,
                     errorTileUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
                 });
@@ -1481,9 +1517,9 @@
                         console.warn('No tiles loaded - switching to fallback');
                         showNotification('Stamen server not responding, trying fallback...', 'info');
                         
-                        fallbackLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
-                            attribution: '© OpenStreetMap contributors © CARTO',
-                            maxZoom: 19
+                        fallbackLayer = L.tileLayer('https://tile.openstreetmap.de/{z}/{x}/{y}.png', {
+                            attribution: '&copy; OpenStreetMap contributors',
+                            maxZoom: 18
                         });
                         state.map.removeLayer(tileLayer);
                         fallbackLayer.addTo(state.map);
@@ -1499,9 +1535,9 @@
                     
                     if (!fallbackLayer) {
                         console.log('Switching to fallback map provider (CartoDB Positron)...');
-                        fallbackLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
-                            attribution: '© OpenStreetMap contributors © CARTO',
-                            maxZoom: 19
+                        fallbackLayer = L.tileLayer('https://tile.openstreetmap.de/{z}/{x}/{y}.png', {
+                            attribution: '&copy; OpenStreetMap contributors',
+                            maxZoom: 18
                         });
                         state.map.removeLayer(tileLayer);
                         fallbackLayer.addTo(state.map);
@@ -1517,6 +1553,7 @@
                 });
                 
                 tileLayer.addTo(state.map);
+
                 
                 setTimeout(() => {
                     const tiles = document.querySelectorAll('.leaflet-tile');
@@ -1637,6 +1674,19 @@
 
         // ==================== ADD FIELD MARKERS ====================
         function addFieldMarkers() {
+            // The per-driver F pins built from the Staff tab replace these, and the
+            // two sources' coordinates differ slightly, so drawing both puts two
+            // markers ~100m apart for the same field.
+            if (!CONFIG.SHOW_FIELDS_TAB_DIAMONDS) {
+                state.fieldMarkers.forEach(marker => {
+                    if (marker && state.map && state.map.hasLayer(marker)) {
+                        state.map.removeLayer(marker);
+                    }
+                });
+                state.fieldMarkers = [];
+                return;
+            }
+
             // Clear existing field markers
             state.fieldMarkers.forEach(marker => {
                 if (marker && state.map.hasLayer(marker)) {
@@ -1714,6 +1764,541 @@
             } else {
                 fieldsSection.style.display = 'none';
             }
+        }
+
+        // ==================== STAFF: PARKING + FIELD LOCATIONS ====================
+        // Reads the "Staff" tab once. Columns A:H are the driver assignments
+        // (driver -> Field ID / Parking ID for today). A second, unrelated block
+        // starting around column J holds the ID -> lat/lng/address lookup. The two
+        // blocks are independent, so each is located by its own header row.
+
+        // Finds the header row for the location lookup by hunting for a row that
+        // has both "ID" and "Latitude" at or past column J (index 9). Falling back
+        // to a scan means the block can be moved without touching this code.
+        // Normalizes an address so small differences ("Ma" vs "MA", double spaces,
+        // a trailing period) don't stop a nickname from matching.
+        function normalizeAddress(text) {
+            return String(text || '')
+                .toLowerCase()
+                .replace(/[.,#]/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        // Second, optional lookup living further right on the Staff tab: an address
+        // in one column and the short name we want to display in another. Keyed by
+        // address rather than row position, so it can't drift out of alignment.
+        function parseAliasBlock(values) {
+            const MIN_COL = 13; // column N, so anything from N over is safe
+            const NAME_HEADERS = ['name', 'short name', 'nickname', 'label', 'short'];
+
+            state.addressAliases.clear();
+
+            let addrCol = -1;
+            let nameCol = -1;
+            let headerRow = -1;
+
+            // Prefer explicit headers if they're there.
+            for (let r = 0; r < values.length && headerRow === -1; r++) {
+                const row = values[r] || [];
+                let a = -1, n = -1;
+                for (let c = MIN_COL; c < row.length; c++) {
+                    const cell = String(row[c] || '').trim().toLowerCase();
+                    if (cell === 'address' && a === -1) a = c;
+                    else if (NAME_HEADERS.indexOf(cell) !== -1 && n === -1) n = c;
+                }
+                if (a !== -1 && n !== -1) {
+                    addrCol = a;
+                    nameCol = n;
+                    headerRow = r;
+                }
+            }
+
+            // Otherwise work it out from the content: the address column is the one
+            // whose values actually match known location addresses, and the name is
+            // the nearest non-empty column to its right. That way the block can sit
+            // at N, O, or anywhere further over without a code change.
+            if (headerRow === -1) {
+                const known = new Set();
+                state.locationsMap.forEach(loc => known.add(normalizeAddress(loc.address)));
+
+                let bestCol = -1;
+                let bestHits = 0;
+                const width = values.reduce((max, row) => Math.max(max, (row || []).length), 0);
+
+                for (let c = MIN_COL; c < width; c++) {
+                    let hits = 0;
+                    for (let r = 0; r < values.length; r++) {
+                        const cell = normalizeAddress((values[r] || [])[c]);
+                        if (cell && known.has(cell)) hits++;
+                    }
+                    if (hits > bestHits) {
+                        bestHits = hits;
+                        bestCol = c;
+                    }
+                }
+
+                if (bestCol === -1) {
+                    console.log('No short-name block found from column N over');
+                    return;
+                }
+
+                addrCol = bestCol;
+                nameCol = -1;
+                for (let c = bestCol + 1; c < width && nameCol === -1; c++) {
+                    for (let r = 0; r < values.length; r++) {
+                        if (String((values[r] || [])[c] || '').trim()) { nameCol = c; break; }
+                    }
+                }
+
+                if (nameCol === -1) {
+                    console.log('Found addresses but no short-name column to their right');
+                    return;
+                }
+            }
+
+            for (let i = headerRow + 1; i < values.length; i++) {
+                const row = values[i] || [];
+                const address = String(row[addrCol] || '').trim();
+                const name = String(row[nameCol] || '').trim();
+                if (!address || !name) continue;
+                if (address.toLowerCase() === 'address') continue; // stray header
+                state.addressAliases.set(normalizeAddress(address), name);
+            }
+
+            if (state.addressAliases.size > 0) {
+                console.log(`Loaded ${state.addressAliases.size} short names (address col ${addrCol + 1}, name col ${nameCol + 1})`);
+
+                // Flag any nickname that doesn't match a real location, since a typo
+                // here fails silently and just shows the long address instead.
+                const known = new Set();
+                state.locationsMap.forEach(loc => known.add(normalizeAddress(loc.address)));
+                const orphans = [];
+                state.addressAliases.forEach((name, key) => {
+                    if (!known.has(key)) orphans.push(name);
+                });
+                if (orphans.length > 0) {
+                    console.warn(`Short names with no matching location address: ${orphans.join(', ')}`);
+                }
+            } else {
+                console.log('No short-name block found from column N over');
+            }
+        }
+
+        function parseLocationBlock(values) {
+            const MIN_COL = 8; // column I, so anything from J over is safe
+            const NAME_HEADERS = ['name', 'short name', 'nickname', 'label', 'short'];
+
+            for (let r = 0; r < values.length; r++) {
+                const row = values[r] || [];
+                let idCol = -1, latCol = -1, lngCol = -1, addrCol = -1, nameCol = -1;
+
+                for (let c = MIN_COL; c < row.length; c++) {
+                    const cell = String(row[c] || '').trim().toLowerCase();
+                    if (cell === 'id' && idCol === -1) idCol = c;
+                    else if (cell === 'latitude' && latCol === -1) latCol = c;
+                    else if (cell === 'longitude' && lngCol === -1) lngCol = c;
+                    else if (cell === 'address' && addrCol === -1) addrCol = c;
+                    else if (NAME_HEADERS.indexOf(cell) !== -1 && nameCol === -1) nameCol = c;
+                }
+
+                if (idCol === -1 || latCol === -1 || lngCol === -1) continue;
+
+                state.locationsMap.clear();
+                for (let i = r + 1; i < values.length; i++) {
+                    const dataRow = values[i] || [];
+                    const id = String(dataRow[idCol] || '').trim();
+                    if (!id) continue;
+                    const lat = parseFloat(dataRow[latCol]);
+                    const lng = parseFloat(dataRow[lngCol]);
+                    if (!validateCoordinates(lat, lng)) continue;
+                    state.locationsMap.set(id, {
+                        lat: lat,
+                        lng: lng,
+                        address: addrCol >= 0 ? String(dataRow[addrCol] || '').trim() : '',
+                        name: nameCol >= 0 ? String(dataRow[nameCol] || '').trim() : ''
+                    });
+                }
+
+                console.log(`Loaded ${state.locationsMap.size} location coordinates (row ${r + 1}, col ${idCol + 1})`
+                    + (nameCol >= 0 ? `, short names from col ${nameCol + 1}` : ', no short-name column found'));
+                return true;
+            }
+
+            console.warn('No ID/Latitude/Longitude block found at or past column J on the Staff tab');
+            return false;
+        }
+
+        async function loadStaffData() {
+            try {
+                const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SHEET_ID}/values/${CONFIG.STAFF_WORKSHEET_NAME}?key=${CONFIG.API_KEY}`;
+                const response = await fetch(url);
+                if (!response.ok) {
+                    if (response.status === 400 || response.status === 404) {
+                        console.log('Staff tab not found - parking/field markers disabled');
+                        return;
+                    }
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const data = await response.json();
+                const values = (data && data.values) || [];
+                if (values.length < 2) return;
+
+                // Location lookup lives on this same tab, off to the right.
+                parseLocationBlock(values);
+
+                // Each staff block is 8 columns wide and always in the same order:
+                //   date | START TIME | FIELD | CAR | CAR ADDRESS | NOTES | Field ID | Parking ID
+                // Blocks are located by their "START TIME" header, then read
+                // positionally -- the second block's "Field ID"/"Parking ID" header
+                // cells are blank, so looking those up by name finds nothing.
+                const headers = (values[0] || []).map(h => String(h || '').trim());
+                const starts = [];
+                headers.forEach((h, i) => { if (h.toUpperCase() === 'START TIME') starts.push(i); });
+
+                const wanted = CONFIG.STAFF_BLOCK || 0;
+                if (starts.length <= wanted) {
+                    console.warn(`Staff block ${wanted} not found (${starts.length} present)`);
+                    return;
+                }
+
+                const base = starts[wanted] - 1; // driver-name column
+                const startCol     = base + 1;
+                const fieldAddrCol = base + 2;
+                const carCol       = base + 3;
+                const parkAddrCol  = base + 4;
+                const notesCol     = base + 5;
+                const fieldIdCol   = base + 6;
+                const parkIdCol    = base + 7;
+
+                console.log(`Reading staff block ${wanted} at column ${base + 1} (${headers[base] || 'unlabelled'})`);
+
+                const staff = [];
+                for (let i = 1; i < values.length; i++) {
+                    const row = values[i] || [];
+                    const driver = String(row[base] || '').trim();
+                    if (!driver) continue;
+
+                    const startTime = String(row[startCol] || '').trim();
+                    if (startTime.toUpperCase() === 'OFF') continue; // not working today
+
+                    const fieldId = String(row[fieldIdCol] || '').trim();
+                    const parkingId = String(row[parkIdCol] || '').trim();
+                    if (!fieldId && !parkingId) continue;
+
+                    staff.push({
+                        driver: driver,
+                        startTime: startTime,
+                        fieldId: fieldId,
+                        parkingId: parkingId,
+                        fieldAddress: String(row[fieldAddrCol] || '').trim(),
+                        parkingAddress: String(row[parkAddrCol] || '').trim(),
+                        car: String(row[carCol] || '').trim(),
+                        notes: String(row[notesCol] || '').trim()
+                    });
+                }
+
+                state.staffData = staff;
+                state.staffByDriver.clear();
+                staff.forEach(entry => state.staffByDriver.set(entry.driver, entry));
+
+                console.log(`Loaded ${staff.length} working drivers from Staff tab`);
+                updateStaffLegend();
+
+                // Staff data arrives after the dog markers are already drawn.
+                // Patch the tooltips in place rather than calling updateMap(), which
+                // would rebuild every dog marker and drop any active selection.
+                refreshDogTooltipsWithStaff();
+                addStaffMarkers(true);
+            } catch (error) {
+                console.error('Error loading Staff tab:', error);
+            }
+        }
+
+        // Deliberately muted: fields are the same black diamonds as before, and
+        // parking is a matching dark square. One marker per location, not per
+        // driver -- the per-driver detail lives in the tooltip instead.
+        let staffIconSeq = 0; // unique clipPath ids so the wedges don't bleed between icons
+
+        // Fields are split into one colour wedge per driver going there, clipped to
+        // the diamond so the silhouette is unchanged. Parking stays solid black --
+        // the white P needs the contrast to stay legible.
+        function createStaffIcon(kind, colors) {
+            const stroke = '#333333';
+
+            if (kind === 'parking') {
+                const size = 24;
+                return L.divIcon({
+                    html: `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"
+                                style="filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3));">
+                            <rect x="3" y="3" width="${size - 6}" height="${size - 6}" rx="4" ry="4"
+                                  fill="#000000" stroke="#666666" stroke-width="2"/>
+                            <text x="${size / 2}" y="${size / 2 + 4}" text-anchor="middle" font-size="11"
+                                  font-family="sans-serif" font-weight="700" fill="#ffffff">P</text>
+                        </svg>`,
+                    className: 'custom-staff-marker staff-parking',
+                    iconSize: [size, size],
+                    iconAnchor: [size / 2, size / 2]
+                });
+            }
+
+            // Grow the diamond with the crowd so every band keeps a usable width.
+            // A diamond only spans its full width at the vertical midpoint, so bands
+            // need roughly 7px each to stay identifiable.
+            const list = (colors && colors.length) ? colors : ['#000000'];
+            const size = Math.min(44, Math.max(24, 10 + list.length * 7));
+
+            const diamond = `M${size / 2} 2 L${size - 2} ${size / 2} L${size / 2} ${size - 2} L2 ${size / 2} Z`;
+            const clipId = `staffdia${++staffIconSeq}`;
+
+            // Vertical bands across the diamond's bounding box, clipped to shape.
+            const bandWidth = size / list.length;
+            const bands = list.map((c, i) =>
+                `<rect x="${(i * bandWidth).toFixed(2)}" y="0" width="${bandWidth.toFixed(2)}" height="${size}" fill="${c}"/>`
+            ).join('');
+
+            return L.divIcon({
+                html: `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"
+                            style="filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3));">
+                        <defs><clipPath id="${clipId}"><path d="${diamond}"/></clipPath></defs>
+                        <g clip-path="url(#${clipId})">${bands}</g>
+                        <path d="${diamond}" fill="none" stroke="${stroke}" stroke-width="2"/>
+                    </svg>`,
+                className: 'custom-staff-marker staff-field',
+                iconSize: [size, size],
+                iconAnchor: [size / 2, size / 2]
+            });
+        }
+
+        function clearStaffMarkers() {
+            state.staffMarkers.forEach(marker => {
+                if (marker && state.map && state.map.hasLayer(marker)) {
+                    state.map.removeLayer(marker);
+                }
+            });
+            state.staffMarkers = [];
+        }
+
+        // Short name for a location ID, falling back to its address then the ID.
+        function locationLabel(id, fallbackAddress) {
+            const loc = state.locationsMap.get(id);
+            const address = (loc && loc.address) || fallbackAddress || '';
+            const name = (loc && loc.name) || state.addressAliases.get(normalizeAddress(address)) || '';
+            return name || address || id || '';
+        }
+
+        // "VAN" or "RAV" from the Staff tab's CAR column (column D). Substring
+        // match, case-insensitive, so entries like "\\#VAN CAM^GoldSiennaW75165"
+        // and "RedRav5KCC23" both hit. Anything else returns nothing at all.
+        function buildVehicleTag(driverName, inline) {
+            try {
+                if (!driverName) return '';
+                const entry = state.staffByDriver.get(driverName.trim());
+                if (!entry || !entry.car) return '';
+
+                const car = entry.car.toLowerCase();
+                let tag = '';
+                if (car.includes('van')) tag = 'VAN';
+                else if (car.includes('rav')) tag = 'RAV';
+                if (!tag) return '';
+
+                return inline
+                    ? `<span style="font-size:12px;color:#ffffff;font-weight:600;letter-spacing:.5px;">&nbsp;&nbsp;${tag}</span>`
+                    : `<br/><span style="font-size:12px;color:#ffffff;font-weight:600;letter-spacing:.5px;">${tag}</span>`;
+            } catch (error) {
+                console.warn('Vehicle tag skipped:', error);
+                return '';
+            }
+        }
+
+        // Small "F: Sherborn  P: Elbery" line appended to each dog's tooltip.
+        function buildStaffSuffix(driverName) {
+            try {
+                if (!driverName) return '';
+                const entry = state.staffByDriver.get(driverName.trim());
+                if (!entry) return '';
+
+                const field = locationLabel(entry.fieldId, entry.fieldAddress);
+                const parking = locationLabel(entry.parkingId, entry.parkingAddress);
+                if (!field && !parking) return '';
+
+                // Each on its own line with nowrap: "F: Holliston P: Sherborn" was
+                // wrapping mid-pair and reading as one run-on string.
+                const rows = [];
+                if (field) rows.push(`<div style="white-space:nowrap;">F: ${escapeHtml(field)}</div>`);
+                if (parking) rows.push(`<div style="white-space:nowrap;">P: ${escapeHtml(parking)}</div>`);
+
+                return `<div style="margin-top:5px;font-size:12px;color:#ffffff;font-weight:400;line-height:1.35;">${rows.join('')}</div>`;
+            } catch (error) {
+                console.warn('Staff suffix skipped:', error);
+                return '';
+            }
+        }
+
+        // Patches the F:/P: line into tooltips of markers already on the map,
+        // without recreating them, so selection and edit state survive.
+        function refreshDogTooltipsWithStaff() {
+            state.markers.forEach(m => {
+                try {
+                    if (!m || !m.marker || !m.marker._baseTooltipHtml) return;
+                    m.marker.setTooltipContent(
+                        m.marker._baseTooltipHtml
+                            .replace('<!--VEHICLE_INLINE-->', buildVehicleTag(m.marker._tooltipDriver, true))
+                            .replace('<!--VEHICLE_BLOCK-->', buildVehicleTag(m.marker._tooltipDriver, false))
+                        + buildStaffSuffix(m.marker._tooltipDriver) + '</div>'
+                    );
+                } catch (error) {
+                    /* a tooltip is cosmetic; never let it bubble */
+                }
+            });
+        }
+
+        // Tooltip for a location: what it is, then every driver using it today
+        // with their colour swatch and start time.
+        // Deliberately minimal: the location name on its own line, then the
+        // drivers using it, two per line. Which kind of marker it is and how many
+        // drivers there are are both obvious from the shape and the list itself.
+        function buildStaffTooltip(spot) {
+            const title = locationLabel(spot.id, '') || spot.id;
+
+            const names = spot.drivers
+                .map(d => d.driver)
+                .sort((a, b) => a.localeCompare(b));
+
+            const lines = [];
+            for (let i = 0; i < names.length; i += 2) {
+                lines.push(names.slice(i, i + 2).join(', ') + (i + 2 < names.length ? ',' : ''));
+            }
+
+            const body = lines
+                .map(line => `<div style="white-space:nowrap;">${escapeHtml(line)}</div>`)
+                .join('');
+
+            return `<div style="text-align:center;">
+                        <div style="font-weight:700;font-size:14px;">${escapeHtml(title)}</div>
+                        <div style="margin-top:3px;font-size:12px;color:#ffffff;line-height:1.35;">${body}</div>
+                    </div>`;
+        }
+
+        function addStaffMarkers(force) {
+            const filter = state.currentFilter;
+            const renderKey = [
+                filter || '',
+                state.showStaff ? '1' : '0',
+                state.staffData.length,
+                state.locationsMap.size,
+                state.staffData.map(d => getDriverColor(d.driver)).join(',')
+            ].join('|');
+
+            if (!force && renderKey === state.staffRenderKey && state.staffMarkers.length > 0) {
+                return;
+            }
+            state.staffRenderKey = renderKey;
+
+            clearStaffMarkers();
+
+            if (!state.showStaff || !state.map) return;
+            if (!state.staffData || state.staffData.length === 0) return;
+            if (state.locationsMap.size === 0) return;
+
+            const visible = filter
+                ? state.staffData.filter(s => s.driver === filter)
+                : state.staffData;
+            if (visible.length === 0) return;
+
+            // One marker per distinct location, with everyone using it attached.
+            const spots = new Map();
+            visible.forEach(entry => {
+                [['parking', entry.parkingId], ['field', entry.fieldId]].forEach(([kind, id]) => {
+                    if (!id) return;
+                    const loc = state.locationsMap.get(id);
+                    if (!loc) {
+                        console.warn(`No coordinates for location ID "${id}" (${entry.driver})`);
+                        return;
+                    }
+                    const key = `${kind}|${id}`;
+                    if (!spots.has(key)) {
+                        spots.set(key, { kind: kind, id: id, lat: loc.lat, lng: loc.lng, drivers: [] });
+                    }
+                    spots.get(key).drivers.push(entry);
+                });
+            });
+
+            spots.forEach(spot => {
+                try {
+                    // Tiny nudge so a driver who parks at their own field still
+                    // gets two separate, clickable markers.
+                    const offset = spot.kind === 'field' ? 0.00035 : -0.00035;
+
+                    const marker = L.marker([spot.lat + offset, spot.lng], {
+                        icon: createStaffIcon(spot.kind, spot.drivers
+                            .slice()
+                            .sort((a, b) => a.driver.localeCompare(b.driver))
+                            .map(d => getDriverColor(d.driver))),
+                        riseOnHover: true
+                    });
+
+                    marker.bindTooltip(buildStaffTooltip(spot), {
+                        permanent: false,
+                        direction: 'top',
+                        offset: [0, -12],
+                        className: 'field-marker-tooltip',
+                        opacity: 0.95
+                    });
+
+                    marker.addTo(state.map);
+                    state.staffMarkers.push(marker);
+                } catch (error) {
+                    console.warn('Error creating staff marker:', error);
+                }
+            });
+        }
+
+        function updateStaffLegend() {
+            const section = document.getElementById('staffLegendSection');
+            const content = document.getElementById('staffLegendContent');
+            if (!section || !content) return;
+
+            if (!state.staffData || state.staffData.length === 0) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+            const unmatched = state.staffData.filter(s =>
+                (s.parkingId && !state.locationsMap.has(s.parkingId)) ||
+                (s.fieldId && !state.locationsMap.has(s.fieldId))
+            );
+
+            content.innerHTML = `
+                <div class="legend-item" style="cursor:default;">
+                    <span style="display:inline-block;width:13px;height:13px;border-radius:3px;
+                                 background:#000;border:1px solid #666;
+                                 margin-right:6px;"></span>
+                    <span><strong>P</strong> — parking (start &amp; end)</span>
+                </div>
+                <div class="legend-item" style="cursor:default;">
+                    <span style="display:inline-block;width:0;height:0;margin-right:6px;
+                                 border-left:7px solid transparent;border-right:7px solid transparent;
+                                 border-bottom:12px solid #000;"></span>
+                    <span><strong>F</strong> — field</span>
+                </div>
+                <div style="font-size:10px;color:#888;margin-top:4px;">
+                    ${state.staffData.length} drivers working today${unmatched.length ? ` &middot; ${unmatched.length} missing coords` : ''}<br/>
+                    Hover a marker for the drivers using it.
+                </div>
+            `;
+        }
+
+        function toggleStaffMarkers() {
+            state.showStaff = !state.showStaff;
+            const btn = document.getElementById('toggleStaffBtn');
+            if (btn) {
+                btn.classList.toggle('active', state.showStaff);
+                btn.innerHTML = state.showStaff ? '🅿️ Hide Start/End' : '🅿️ Show Start/End';
+            }
+            addStaffMarkers(true);
+            showNotification(state.showStaff ? 'Showing parking & fields' : 'Hiding parking & fields', 'info', 1200);
         }
 
         // ==================== DATA LOADING ====================
@@ -1869,6 +2454,9 @@
                 
                 // Load fields data after main data
                 loadFieldsData();
+
+                // Load parking/field start & end points for today's drivers
+                loadStaffData();
                 
             } catch (error) {
                 console.error('Data loading error:', error);
@@ -2068,6 +2656,12 @@
                         const notesValue = row['Notes'] || '';
                         
                         let tooltipHtml = `<div style="text-align: center;"><strong>${escapeHtml(driverDisplay)}:${escapeHtml(groupDisplay)}</strong>`;
+                        // Filled in by refreshDogTooltipsWithStaff() once the Staff
+                        // tab has loaded; harmless HTML comment until then. Short
+                        // headers like "Bri:3" keep the tag on the same line;
+                        // longer ones like "Chelsey:1&2" push it below.
+                        const headerWidth = `${driverDisplay}:${groupDisplay}`.length;
+                        tooltipHtml += headerWidth <= 8 ? '<!--VEHICLE_INLINE-->' : '<!--VEHICLE_BLOCK-->';
                         if (countValue && countValue.toString().trim() !== '') {
                             tooltipHtml += `  <span style="color: #ff6b6b; font-weight: bold;">(${escapeHtml(countValue)})</span>`;
                         }
@@ -2083,8 +2677,11 @@
                             tooltipHtml += `<br/><span style="font-style: italic; color: white;">${escapeHtml(notesValue)}</span>`;
                         }
                         
-                        tooltipHtml += `</div>`;
-                        
+                        // Base tooltip is stored without the staff line so it can be
+                        // re-rendered later without touching the marker itself.
+                        const baseTooltipHtml = tooltipHtml;
+                        tooltipHtml += buildStaffSuffix(driver) + `</div>`;
+
                         const marker = L.marker([offsetLat, offsetLng], {
                             icon: createMarkerIcon(color, false, 'group', group, isInSelection, row['Dog Name'], hasCallout, hasTomorrowFlag(row)),
                             riseOnHover: true
@@ -2101,6 +2698,8 @@
                         });
 
                         marker._rowData = row;
+                        marker._baseTooltipHtml = baseTooltipHtml;
+                        marker._tooltipDriver = driver;
                         
                         const { group: markerGroup } = state.activeColumn && row[state.activeColumn] ? 
                             parseCombined(row[state.activeColumn]) : 
@@ -2154,6 +2753,15 @@
                 
                 // Re-add field markers (they were cleared in updateMap)
                 addFieldMarkers();
+
+                // Re-add parking/field start & end markers (respects driver filter).
+                // Isolated: the dogs are the point of this map, and nothing in the
+                // staff layer is allowed to interrupt drawing them.
+                try {
+                    addStaffMarkers();
+                } catch (staffError) {
+                    console.warn('Staff markers failed; dogs unaffected:', staffError);
+                }
                 
                 // Fit bounds if we have markers
                 if (state.markers.length > 0 && state.markers.length < 100) {
@@ -3189,6 +3797,7 @@
                 document.getElementById('selectionModeBtn')?.addEventListener('click', toggleSelectionMode);
                 document.getElementById('clearSelectionBtn')?.addEventListener('click', clearSelection);
                 document.getElementById('resetColorsBtn')?.addEventListener('click', resetColors);
+                document.getElementById('toggleStaffBtn')?.addEventListener('click', toggleStaffMarkers);
                 document.getElementById('showAllBtn')?.addEventListener('click', clearFilter);
                 document.getElementById('panelToggle')?.addEventListener('click', togglePanel);
                 document.getElementById('testConnectionBtn')?.addEventListener('click', testAppsScriptConnection);
