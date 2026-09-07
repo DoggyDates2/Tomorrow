@@ -722,6 +722,9 @@
             FIELDS_WORKSHEET_NAME: 'Fields', // Static field list (superseded by the F pins)
             SHOW_FIELDS_TAB_DIAMONDS: false, // Flip to true to bring the black diamonds back
             STAFF_WORKSHEET_NAME: 'Staff',
+            DRIVER_LABEL_MIN_ZOOM: 14, // driver names appear at this zoom and closer
+            DRIVER_LABEL_SPLIT_PX: 150, // dogs further apart than this are separate clumps
+            DRIVER_LABEL_MAX_PER_DRIVER: 3, // most labels one driver can get on screen
             STAFF_BLOCK: 1, // 0 = first block (A:H, today), 1 = second block (P:W, tomorrow) // Driver -> Field ID / Parking ID, plus the ID -> lat/lng block from col J over
             API_KEY: 'AIzaSyAGLteYp1k98SZo0FMClRgBX0LBsgpMxqI',
             APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbyAIZavcGcPhKH8WC6Ynop5NESF5sE2eyePubRoqebSbj3sbPxr4BMp-eYD81-th7cstQ/exec',
@@ -762,7 +765,8 @@
             locationsMap: new Map(), // Location ID -> {lat, lng, address, name}
             addressAliases: new Map(), // normalized address -> short display name
             staffByDriver: new Map(), // driver name -> today's staff row
-            staffRenderKey: null, // guards against needless staff pin rebuilds
+            staffRenderKey: null,
+            driverLabels: [], // zoomed-in driver name labels // guards against needless staff pin rebuilds
             staffMarkers: [], // Parking + field markers built from Staff tab
             showStaff: true, // Toggle for parking/field markers
             filteredData: [],
@@ -1564,6 +1568,8 @@
                 
                 tileLayer.addTo(state.map);
                 state.map.on('zoomend', applyFieldArrows);
+                // Layout is pan-invariant, so this only needs redoing on zoom.
+                state.map.on('zoomend', applyDriverLabels);
 
                 
                 setTimeout(() => {
@@ -2217,6 +2223,149 @@
                     /* an arrow is decoration; never let it bubble */
                 }
             });
+        }
+
+        function clearDriverLabels() {
+            state.driverLabels.forEach(m => {
+                if (m && state.map && state.map.hasLayer(m)) state.map.removeLayer(m);
+            });
+            state.driverLabels = [];
+        }
+
+        // Splits one driver's dogs into separate clumps by proximity, so a driver
+        // working two towns gets a label on each. A single centroid across both
+        // would land in the empty space between them.
+        function splitIntoClumps(points, maxGap) {
+            const remaining = points.slice();
+            const clumps = [];
+
+            while (remaining.length) {
+                const clump = [remaining.pop()];
+                let grew = true;
+                while (grew) {
+                    grew = false;
+                    for (let i = remaining.length - 1; i >= 0; i--) {
+                        const p = remaining[i];
+                        const near = clump.some(q =>
+                            Math.hypot(p.x - q.x, p.y - q.y) <= maxGap);
+                        if (near) {
+                            clump.push(p);
+                            remaining.splice(i, 1);
+                            grew = true;
+                        }
+                    }
+                }
+                clumps.push(clump);
+            }
+            return clumps;
+        }
+
+        // Driver name written near that driver's cluster once you're zoomed in far
+        // enough to have room. Positions are chosen by trying candidate spots around
+        // the cluster centre and keeping whichever overlaps the fewest markers and
+        // already-placed labels, so names don't sit on top of pins.
+        function applyDriverLabels() {
+            try {
+                clearDriverLabels();
+                if (!state.map) return;
+                if (state.map.getZoom() < CONFIG.DRIVER_LABEL_MIN_ZOOM) return;
+
+                const toPoint = ll => state.map.latLngToLayerPoint(ll);
+
+                // Every dog and every field/parking marker, NOT just the visible
+                // ones. Layer points are pan-invariant, so using the full set makes
+                // the layout depend only on zoom -- filtering by viewport made
+                // clumps regroup on every pan and the labels flickered.
+                const obstacles = [];
+                const clusters = new Map();
+
+                state.markers.forEach(m => {
+                    const marker = m && m.marker;
+                    if (!marker || typeof marker.getLatLng !== 'function') return;
+                    const pt = toPoint(marker.getLatLng());
+                    obstacles.push({ x: pt.x - 9, y: pt.y - 9, w: 18, h: 18 });
+
+                    const driver = String(marker._tooltipDriver || '').trim();
+                    if (!driver) return;
+                    if (!clusters.has(driver)) clusters.set(driver, []);
+                    clusters.get(driver).push(pt);
+                });
+
+                state.staffMarkers.forEach(marker => {
+                    const pt = toPoint(marker.getLatLng());
+                    obstacles.push({ x: pt.x - 22, y: pt.y - 22, w: 44, h: 44 });
+                });
+
+                const hits = (box, list) => list.reduce((n, o) =>
+                    n + ((box.x < o.x + o.w && box.x + box.w > o.x &&
+                          box.y < o.y + o.h && box.y + box.h > o.y) ? 1 : 0), 0);
+
+                // Biggest clusters get first pick of the clear space.
+                const ordered = [...clusters.entries()].sort((a, b) => b[1].length - a[1].length);
+                const placed = [];
+
+                // Flatten to one entry per clump, then place biggest-first so the
+                // densest groups get the clear space.
+                const jobs = [];
+                ordered.forEach(([driver, pts]) => {
+                    splitIntoClumps(pts, CONFIG.DRIVER_LABEL_SPLIT_PX)
+                        .filter(c => c.length >= 2) // a lone dog isn't a cluster
+                        .sort((a, b) => b.length - a.length)
+                        .slice(0, CONFIG.DRIVER_LABEL_MAX_PER_DRIVER)
+                        .forEach(clump => jobs.push({ driver, pts: clump }));
+                });
+                jobs.sort((a, b) => b.pts.length - a.pts.length);
+
+                jobs.forEach(({ driver, pts }) => {
+                    const cx = pts.reduce((s2, p2) => s2 + p2.x, 0) / pts.length;
+                    const cy = pts.reduce((s2, p2) => s2 + p2.y, 0) / pts.length;
+
+                    const w = driver.length * 7.5 + 8;
+                    const h = 16;
+
+                    let best = null;
+                    for (const radius of [0, 26, 46, 70, 100]) {
+                        for (let a = 0; a < 8; a++) {
+                            const ang = (a / 8) * Math.PI * 2 - Math.PI / 2;
+                            const x = cx + (radius ? Math.cos(ang) * radius : 0) - w / 2;
+                            const y = cy + (radius ? Math.sin(ang) * radius : 0) - h / 2;
+                            const box = { x, y, w, h };
+                            // Labels colliding with each other is worse than a label
+                            // brushing a pin, so weight them heavier.
+                            const score = hits(box, obstacles) + hits(box, placed) * 4;
+                            if (!best || score < best.score) best = { score, box };
+                            if (score === 0) break;
+                        }
+                        if (best && best.score === 0) break;
+                    }
+                    if (!best) return;
+
+                    placed.push(best.box);
+
+                    const centre = L.point(best.box.x + w / 2, best.box.y + h / 2);
+                    const colour = getDriverColor(driver);
+
+                    const label = L.marker(state.map.layerPointToLatLng(centre), {
+                        interactive: false,
+                        zIndexOffset: 900,
+                        icon: L.divIcon({
+                            className: 'driver-cluster-label',
+                            iconSize: [w, h],
+                            iconAnchor: [w / 2, h / 2],
+                            html: `<div style="font:700 12px/16px system-ui,sans-serif;
+                                        text-align:center; white-space:nowrap; color:${colour};
+                                        text-shadow:-2px -2px 0 #fff, 2px -2px 0 #fff,
+                                                    -2px 2px 0 #fff, 2px 2px 0 #fff, 0 0 4px #fff;
+                                        pointer-events:none;">${escapeHtml(driver)}</div>`
+                        })
+                    });
+
+                    label.addTo(state.map);
+                    state.driverLabels.push(label);
+                });
+            } catch (error) {
+                console.warn('Driver labels skipped:', error);
+            }
         }
 
         function refreshDogTooltipsWithStaff() {
@@ -2888,6 +3037,7 @@
                     // the VAN tag, the F:/P: lines and the arrows. Re-apply them.
                     refreshDogTooltipsWithStaff();
                     applyFieldArrows();
+                    applyDriverLabels();
                 } catch (staffError) {
                     console.warn('Staff overlay failed; dogs unaffected:', staffError);
                 }
