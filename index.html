@@ -1490,7 +1490,9 @@
 
                 let tileUrl, tileAttribution, tileMaxZoom;
                 if (provider === 'carto') {
-                    tileUrl = `https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png?key=${tileKey}`;
+                    // Positron raster lives under /rastertiles/ and is served from
+                    // the a-d subdomains; the shorter path silently 404s.
+                    tileUrl = `https://{s}.basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png?key=${tileKey}`;
                     tileAttribution = '&copy; OpenStreetMap contributors &copy; CARTO';
                     tileMaxZoom = 20;
                 } else if (provider === 'stadia') {
@@ -1507,6 +1509,7 @@
                 
                 const tileLayer = L.tileLayer(tileUrl, {
                     attribution: tileAttribution,
+                    subdomains: provider === 'carto' ? 'abcd' : 'abc',
                     maxZoom: tileMaxZoom,
                     minZoom: 2,
                     errorTileUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
