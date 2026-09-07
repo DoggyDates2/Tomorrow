@@ -959,11 +959,14 @@
         }
 
         // Parse combined field to extract driver and group
-        // Any assignment mentioning "cancel" is hidden, wherever it appears in the
-        // cell. Exact matching missed real values like "LMCancel$:?" where a stray
-        // character or a trailing ":group" is appended.
+        // Assignments hidden from the map entirely. Substring matching, because the
+        // real cells carry stray characters and a trailing ":group" -- e.g.
+        // "LMCancel$:?" and "Dylan:1XX23" -- which exact matching missed.
+        const HIDDEN_MARKERS = ['cancel', '1xx23'];
+
         function isCancelledValue(value) {
-            return String(value || '').toLowerCase().includes('cancel');
+            const v = String(value || '').toLowerCase();
+            return HIDDEN_MARKERS.some(marker => v.includes(marker));
         }
 
         function parseCombined(combinedValue) {
@@ -2145,13 +2148,12 @@
                 const parking = locationLabel(entry.parkingId, entry.parkingAddress);
                 if (!field && !parking) return '';
 
-                // Each on its own line with nowrap: "F: Holliston P: Sherborn" was
-                // wrapping mid-pair and reading as one run-on string.
-                const rows = [];
-                if (field) rows.push(`<div style="white-space:nowrap;">F: ${escapeHtml(field)}</div>`);
-                if (parking) rows.push(`<div style="white-space:nowrap;">P: ${escapeHtml(parking)}</div>`);
+                // Field first, parking second, on a single nowrap line. Names are
+                // short enough that the worst case still fits.
+                const line = [field, parking].filter(Boolean).map(escapeHtml).join(' &middot; ');
 
-                return `<div style="margin-top:5px;font-size:12px;color:#ffffff;font-weight:400;line-height:1.35;">${rows.join('')}</div>`;
+                return `<div style="margin-top:5px;font-size:12px;color:#ffffff;font-weight:400;`
+                     + `line-height:1.35;white-space:nowrap;">${line}</div>`;
             } catch (error) {
                 console.warn('Staff suffix skipped:', error);
                 return '';
