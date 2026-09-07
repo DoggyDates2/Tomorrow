@@ -2196,10 +2196,18 @@
                         'position:absolute; left:50%; top:50%; width:0; height:0;'
                         + 'pointer-events:none; z-index:400;'
                         + `transform:translate(-50%,-50%) rotate(${deg.toFixed(1)}deg);`;
+                    // A real arrow -- shaft plus head -- rather than a lone triangle,
+                    // which was unreadable at 5px against the basemap.
                     arrow.innerHTML =
-                        '<div style="position:absolute; left:-3px; top:-15px; width:0; height:0;'
-                        + 'border-left:3px solid transparent; border-right:3px solid transparent;'
-                        + 'border-bottom:5px solid rgba(0,0,0,0.55);"></div>';
+                        '<svg width="16" height="20" viewBox="0 0 16 20"'
+                        + ' style="position:absolute; left:-8px; top:-22px; overflow:visible;">'
+                        + '<g stroke="#ffffff" stroke-width="4" fill="none" stroke-linecap="round"'
+                        + ' stroke-linejoin="round">'
+                        + '<path d="M8 19 L8 5"/><path d="M2.5 10 L8 4 L13.5 10"/></g>'
+                        + '<g stroke="#111111" stroke-width="2" fill="none" stroke-linecap="round"'
+                        + ' stroke-linejoin="round">'
+                        + '<path d="M8 19 L8 5"/><path d="M2.5 10 L8 4 L13.5 10"/></g>'
+                        + '</svg>';
                     el.appendChild(arrow);
                 } catch (error) {
                     /* an arrow is decoration; never let it bubble */
