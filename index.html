@@ -722,9 +722,9 @@
             FIELDS_WORKSHEET_NAME: 'Fields', // Static field list (superseded by the F pins)
             SHOW_FIELDS_TAB_DIAMONDS: false, // Flip to true to bring the black diamonds back
             STAFF_WORKSHEET_NAME: 'Staff',
-            DRIVER_LABEL_MIN_ZOOM: 14, // driver names appear at this zoom and closer
-            DRIVER_LABEL_SPLIT_PX: 150, // dogs further apart than this are separate clumps
-            DRIVER_LABEL_MAX_PER_DRIVER: 3, // most labels one driver can get on screen
+            DRIVER_LABEL_MIN_ZOOM: 12, // driver names appear at this zoom and closer
+            DRIVER_LABEL_SPLIT_PX: 110, // dogs further apart than this are separate clumps
+            DRIVER_LABEL_MAX_PER_DRIVER: 5, // most labels one driver can get on screen
             STAFF_BLOCK: 1, // 0 = first block (A:H, today), 1 = second block (P:W, tomorrow) // Driver -> Field ID / Parking ID, plus the ID -> lat/lng block from col J over
             API_KEY: 'AIzaSyAGLteYp1k98SZo0FMClRgBX0LBsgpMxqI',
             APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbyAIZavcGcPhKH8WC6Ynop5NESF5sE2eyePubRoqebSbj3sbPxr4BMp-eYD81-th7cstQ/exec',
@@ -2232,6 +2232,51 @@
             state.driverLabels = [];
         }
 
+        // Dogs per group for one driver, counted exactly as the legend does so the
+        // cluster label and the legend can never disagree.
+        function driverGroupCounts(driver) {
+            const counts = { 1: 0, 2: 0, 3: 0 };
+            if (!state.allData || !state.activeColumn) return counts;
+
+            state.allData.forEach(row => {
+                if (!row || !row[state.activeColumn]) return;
+                const columnValue = row[state.activeColumn].trim();
+                if (!columnValue || isCancelledValue(columnValue)) return;
+
+                const parsed = parseCombined(columnValue);
+                if (parsed.driver !== driver) return;
+
+                const dogCount = parseInt(row['Number of Dogs'] || '1') || 1;
+                const group = parsed.group;
+                if (group === null) return;
+
+                if (typeof group === 'string' && group.length > 1) {
+                    group.split('').forEach(g => {
+                        const n = parseInt(g);
+                        if (n >= 1 && n <= 3) counts[n] += dogCount;
+                    });
+                } else if (typeof group === 'number' && group >= 1 && group <= 3) {
+                    counts[group] += dogCount;
+                }
+            });
+            return counts;
+        }
+
+        // "Chi.VAN.8,9,7" -- driver, vehicle if they have one, then group counts.
+        function driverLabelText(driver) {
+            const parts = [driver];
+
+            const entry = state.staffByDriver.get(driver);
+            const car = String((entry && entry.car) || '').toLowerCase();
+            if (car.includes('van')) parts.push('VAN');
+            else if (car.includes('rav')) parts.push('RAV');
+
+            const c = driverGroupCounts(driver);
+            if (c[1] + c[2] + c[3] > 0) parts.push(`${c[1]},${c[2]},${c[3]}`);
+
+            return parts.join('.');
+        }
+
         // Splits one driver's dogs into separate clumps by proximity, so a driver
         // working two towns gets a label on each. A single centroid across both
         // would land in the empty space between them.
@@ -2293,7 +2338,10 @@
 
                 state.staffMarkers.forEach(marker => {
                     const pt = toPoint(marker.getLatLng());
-                    obstacles.push({ x: pt.x - 22, y: pt.y - 22, w: 44, h: 44 });
+                    // Sized to the actual marker, not a flat 44px: an oversized box
+                    // made every location label collide with its own marker.
+                    const half = (marker._locationSize || 28) / 2 + 2;
+                    obstacles.push({ x: pt.x - half, y: pt.y - half, w: half * 2, h: half * 2 });
                 });
 
                 const hits = (box, list) => list.reduce((n, o) =>
@@ -2320,7 +2368,8 @@
                     const cx = pts.reduce((s2, p2) => s2 + p2.x, 0) / pts.length;
                     const cy = pts.reduce((s2, p2) => s2 + p2.y, 0) / pts.length;
 
-                    const w = driver.length * 7.5 + 8;
+                    const text = driverLabelText(driver);
+                    const w = text.length * 7 + 8;
                     const h = 16;
 
                     let best = null;
@@ -2356,12 +2405,61 @@
                                         text-align:center; white-space:nowrap; color:${colour};
                                         text-shadow:-2px -2px 0 #fff, 2px -2px 0 #fff,
                                                     -2px 2px 0 #fff, 2px 2px 0 #fff, 0 0 4px #fff;
-                                        pointer-events:none;">${escapeHtml(driver)}</div>`
+                                        pointer-events:none;">${escapeHtml(text)}</div>`
                         })
                     });
 
                     label.addTo(state.map);
                     state.driverLabels.push(label);
+                });
+
+                // Field and parking names last, and only where nothing at all is in
+                // the way. Driver labels and dogs have already claimed their space,
+                // so a location name appears only if it genuinely fits.
+                state.staffMarkers.forEach(marker => {
+                    const name = marker._locationName;
+                    if (!name) return;
+
+                    const pt = toPoint(marker.getLatLng());
+                    const w = name.length * 6.5 + 6;
+                    const h = 14;
+                    // Clear the marker's own obstacle box plus half the label.
+                    const gap = (marker._locationSize || 28) / 2 + 2 + h / 2 + 3;
+
+                    // Below first -- it reads as a caption -- then above, then sides.
+                    const candidates = [
+                        { x: pt.x - w / 2, y: pt.y + gap - h / 2 },
+                        { x: pt.x - w / 2, y: pt.y - gap - h / 2 },
+                        { x: pt.x + gap + w / 2 - w, y: pt.y - h / 2 },
+                        { x: pt.x - gap - w / 2, y: pt.y - h / 2 }
+                    ];
+
+                    const spot = candidates.find(c => {
+                        const box = { x: c.x, y: c.y, w: w, h: h };
+                        return hits(box, obstacles) === 0 && hits(box, placed) === 0;
+                    });
+                    if (!spot) return; // no room; stay silent rather than overlap
+
+                    placed.push({ x: spot.x, y: spot.y, w: w, h: h });
+
+                    const centre = L.point(spot.x + w / 2, spot.y + h / 2);
+                    const tag = L.marker(state.map.layerPointToLatLng(centre), {
+                        interactive: false,
+                        zIndexOffset: 880,
+                        icon: L.divIcon({
+                            className: 'location-name-label',
+                            iconSize: [w, h],
+                            iconAnchor: [w / 2, h / 2],
+                            html: `<div style="font:700 11px/14px system-ui,sans-serif;
+                                        text-align:center; white-space:nowrap; color:#000;
+                                        text-shadow:-2px -2px 0 #fff, 2px -2px 0 #fff,
+                                                    -2px 2px 0 #fff, 2px 2px 0 #fff, 0 0 4px #fff;
+                                        pointer-events:none;">${escapeHtml(name)}</div>`
+                        })
+                    });
+
+                    tag.addTo(state.map);
+                    state.driverLabels.push(tag);
                 });
             } catch (error) {
                 console.warn('Driver labels skipped:', error);
@@ -2523,6 +2621,9 @@
                         icon: createStaffIcon(isField ? 'field' : 'parking', colors),
                         riseOnHover: true
                     });
+
+                    marker._locationName = locationLabel(spot.id, '') || spot.id;
+                    marker._locationSize = isField ? 30 : 26;
 
                     marker.bindTooltip(buildStaffTooltip(spot), {
                         permanent: false,
