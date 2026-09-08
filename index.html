@@ -1255,6 +1255,77 @@
         }
 
         // ==================== COLOR MANAGEMENT ====================
+        // ---- perceptual colour distance -------------------------------------
+        // Adjacent drivers used to get whatever palette entry their alphabetical
+        // position landed on, which is why near-identical colours kept ending up
+        // side by side. These helpers let us measure how different two colours
+        // actually look, rather than how far apart they sit in the list.
+
+        function hexToLab(hex) {
+            const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+            if (!m) return null;
+
+            let [r, g, b] = [0, 2, 4].map(i => parseInt(m[1].substr(i, 2), 16) / 255);
+            // sRGB -> linear
+            [r, g, b] = [r, g, b].map(v => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+
+            // linear RGB -> XYZ (D65), then normalised to the reference white
+            const x = (r * 0.4124 + g * 0.3576 + b * 0.1805) / 0.95047;
+            const y = (r * 0.2126 + g * 0.7152 + b * 0.0722);
+            const z = (r * 0.0193 + g * 0.1192 + b * 0.9505) / 1.08883;
+
+            const f = t => t > 0.008856 ? Math.cbrt(t) : (7.787 * t + 16 / 116);
+            const [fx, fy, fz] = [f(x), f(y), f(z)];
+
+            return { L: 116 * fy - 16, a: 500 * (fx - fy), b: 200 * (fy - fz) };
+        }
+
+        const LAB_CACHE = {};
+        function labOf(hex) {
+            if (!(hex in LAB_CACHE)) LAB_CACHE[hex] = hexToLab(hex);
+            return LAB_CACHE[hex];
+        }
+
+        // CIE76 deltaE. Roughly: under ~15 two colours read as "similar",
+        // under ~25 they're easy to confuse on small markers.
+        function colorDistance(hexA, hexB) {
+            const A = labOf(hexA), B = labOf(hexB);
+            if (!A || !B) return 100;
+            return Math.hypot(A.L - B.L, A.a - B.a, A.b - B.b);
+        }
+
+        // Two drivers are neighbours if any of their dogs are within this many
+        // degrees of each other -- about a mile, i.e. close enough on screen that
+        // similar colours would be confusable.
+        const NEIGHBOUR_RADIUS_DEG = 0.015;
+
+        function buildDriverAdjacency(driverPoints) {
+            const names = Object.keys(driverPoints);
+            const adjacency = {};
+            names.forEach(n => { adjacency[n] = new Set(); });
+
+            for (let i = 0; i < names.length; i++) {
+                for (let j = i + 1; j < names.length; j++) {
+                    const A = driverPoints[names[i]], B = driverPoints[names[j]];
+                    let near = false;
+                    for (let a = 0; a < A.length && !near; a++) {
+                        for (let b = 0; b < B.length; b++) {
+                            if (Math.abs(A[a].lat - B[b].lat) <= NEIGHBOUR_RADIUS_DEG &&
+                                Math.abs(A[a].lng - B[b].lng) <= NEIGHBOUR_RADIUS_DEG) {
+                                near = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (near) {
+                        adjacency[names[i]].add(names[j]);
+                        adjacency[names[j]].add(names[i]);
+                    }
+                }
+            }
+            return adjacency;
+        }
+
         function assignDriverColors() {
             if (!state.allData || state.allData.length === 0 || !state.activeColumn) {
                 state.driverColorMap = {};
@@ -1280,14 +1351,71 @@
             
             const sortedDrivers = Array.from(drivers).sort();
             const newColorMap = {};
-            
+
+            // Where each driver's dogs are, so we know who works next to whom.
+            const driverPoints = {};
+            state.allData.forEach(row => {
+                if (!row || !row[state.activeColumn]) return;
+                const columnValue = row[state.activeColumn].trim();
+                if (!columnValue || isCancelledValue(columnValue)) return;
+                const { driver } = parseCombined(columnValue);
+                if (!driver) return;
+                const lat = parseFloat(row['Latitude']);
+                const lng = parseFloat(row['Longitude']);
+                if (!validateCoordinates(lat, lng)) return;
+                (driverPoints[driver] = driverPoints[driver] || []).push({ lat, lng });
+            });
+
+            const adjacency = buildDriverAdjacency(driverPoints);
+
+            // Anything the user picked by hand is fixed and constrains the rest.
+            sortedDrivers.forEach(driver => {
+                if (state.customColors[driver]) newColorMap[driver] = state.customColors[driver];
+            });
+
+            // Most-constrained drivers first: whoever borders the most others has
+            // the fewest good options, so let them choose before the loners do.
+            const toAssign = sortedDrivers
+                .filter(d => !newColorMap[d])
+                .sort((a, b) => {
+                    const da = (adjacency[a] || new Set()).size;
+                    const db = (adjacency[b] || new Set()).size;
+                    return db - da || a.localeCompare(b);
+                });
+
+            const usedCount = {};
+            ALL_COLORS.forEach(c => { usedCount[c] = 0; });
+            Object.values(newColorMap).forEach(c => {
+                if (c in usedCount) usedCount[c]++;
+            });
+
+            toAssign.forEach(driver => {
+                const neighbours = [...(adjacency[driver] || [])]
+                    .map(n => newColorMap[n])
+                    .filter(Boolean);
+
+                let best = null;
+                ALL_COLORS.forEach(candidate => {
+                    // How close is this colour to the nearest already-placed
+                    // neighbour? Bigger is better.
+                    const worst = neighbours.length
+                        ? Math.min(...neighbours.map(c => colorDistance(candidate, c)))
+                        : 999;
+                    // Reuse across the whole map is a mild penalty; clashing with a
+                    // neighbour is the thing we actually care about.
+                    const score = worst - usedCount[candidate] * 12;
+                    if (!best || score > best.score) best = { score, candidate };
+                });
+
+                if (best) {
+                    newColorMap[driver] = best.candidate;
+                    usedCount[best.candidate]++;
+                }
+            });
+
             sortedDrivers.forEach((driver, index) => {
-                if (state.customColors[driver]) {
-                    newColorMap[driver] = state.customColors[driver];
-                } else if (state.driverColorMap[driver]) {
-                    newColorMap[driver] = state.driverColorMap[driver];
-                } else if (index < ALL_COLORS.length) {
-                    newColorMap[driver] = ALL_COLORS[index];
+                if (newColorMap[driver]) {
+                    // already settled above
                 } else {
                     let hash = 0;
                     for (let i = 0; i < driver.length; i++) {
