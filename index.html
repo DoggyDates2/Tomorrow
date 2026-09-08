@@ -766,6 +766,7 @@
             addressAliases: new Map(), // normalized address -> short display name
             staffByDriver: new Map(), // driver name -> today's staff row
             staffRenderKey: null,
+            useLegacyFields: false, // true when Staff tab gave us nothing to draw
             driverLabels: [], // zoomed-in driver name labels // guards against needless staff pin rebuilds
             staffMarkers: [], // Parking + field markers built from Staff tab
             showStaff: true, // Toggle for parking/field markers
@@ -1892,7 +1893,7 @@
             // The per-driver F pins built from the Staff tab replace these, and the
             // two sources' coordinates differ slightly, so drawing both puts two
             // markers ~100m apart for the same field.
-            if (!CONFIG.SHOW_FIELDS_TAB_DIAMONDS) {
+            if (!CONFIG.SHOW_FIELDS_TAB_DIAMONDS && !state.useLegacyFields) {
                 state.fieldMarkers.forEach(marker => {
                     if (marker && state.map && state.map.hasLayer(marker)) {
                         state.map.removeLayer(marker);
@@ -2150,14 +2151,15 @@
                 const response = await fetch(url);
                 if (!response.ok) {
                     if (response.status === 400 || response.status === 404) {
-                        console.log('Staff tab not found - parking/field markers disabled');
+                        console.log('Staff tab not found - falling back to plain field markers');
+                        addStaffMarkers(true);
                         return;
                     }
                     throw new Error(`HTTP ${response.status}`);
                 }
                 const data = await response.json();
                 const values = (data && data.values) || [];
-                if (values.length < 2) return;
+                if (values.length < 2) { addStaffMarkers(true); return; }
 
                 // Location lookup lives on this same tab, off to the right.
                 parseLocationBlock(values);
@@ -2228,6 +2230,7 @@
                 addStaffMarkers(true);
             } catch (error) {
                 console.error('Error loading Staff tab:', error);
+                try { addStaffMarkers(true); } catch (e) { /* fallback is best-effort */ }
             }
         }
 
@@ -2432,7 +2435,7 @@
 
         // Dogs per group for one driver, counted exactly as the legend does so the
         // cluster label and the legend can never disagree.
-        function driverGroupCounts(driver) {
+        function computeDriverGroupCounts(driver) {
             const counts = { 1: 0, 2: 0, 3: 0 };
             if (!state.allData || !state.activeColumn) return counts;
 
@@ -2469,7 +2472,7 @@
             if (car.includes('van')) parts.push('VAN');
             else if (car.includes('rav')) parts.push('RAV');
 
-            const c = driverGroupCounts(driver);
+            const c = computeDriverGroupCounts(driver);
             if (c[1] + c[2] + c[3] > 0) parts.push(`${c[1]},${c[2]},${c[3]}`);
 
             return parts.join('.');
@@ -2764,8 +2767,49 @@
             clearStaffMarkers();
 
             if (!state.showStaff || !state.map) return;
-            if (!state.staffData || state.staffData.length === 0) return;
-            if (state.locationsMap.size === 0) return;
+
+            // No driver assignments today (Staff tab empty, missing, or everyone
+            // OFF). Fall back to a plain, uncoloured picture: every known field as
+            // a black diamond and every parking spot as a black P square. If even
+            // the location list is missing, revert to the original Fields-tab
+            // diamonds so the map is never left with no fields at all.
+            if (!state.staffData || state.staffData.length === 0) {
+                if (state.locationsMap.size === 0) {
+                    state.useLegacyFields = true;
+                    addFieldMarkers();
+                    return;
+                }
+                state.useLegacyFields = false;
+                state.locationsMap.forEach((loc, id) => {
+                    try {
+                        const kind = /P$/i.test(id) ? 'parking' : 'field';
+                        const marker = L.marker([loc.lat, loc.lng], {
+                            icon: createStaffIcon(kind, ['#000000']),
+                            riseOnHover: true
+                        });
+                        marker._locationName = loc.name || loc.address || id;
+                        marker._locationSize = kind === 'field' ? 30 : 26;
+                        marker.bindTooltip(
+                            `<div style="text-align:center;font-weight:700;font-size:14px;">${escapeHtml(marker._locationName)}</div>`,
+                            { permanent: false, direction: 'top', offset: [0, -12],
+                              className: 'field-marker-tooltip', opacity: 0.95 }
+                        );
+                        marker.addTo(state.map);
+                        state.staffMarkers.push(marker);
+                    } catch (error) {
+                        console.warn('Fallback location marker failed:', error);
+                    }
+                });
+                return;
+            }
+            // Assignments exist but nothing to plot them on: the J:N location
+            // block is missing. Better the old Fields-tab diamonds than nothing.
+            if (state.locationsMap.size === 0) {
+                state.useLegacyFields = true;
+                addFieldMarkers();
+                return;
+            }
+            state.useLegacyFields = false;
 
             const visible = filter
                 ? state.staffData.filter(s => s.driver === filter)
@@ -3068,6 +3112,7 @@
                     }
                 });
                 state.markers = [];
+                const groupCountCache = new Map();
                 state.coordinateLookup.clear();
 
                 const searchInput = document.getElementById('searchInput');
@@ -3186,41 +3231,18 @@
                         const isInSelection = dogId && state.selectedMarkers.has(dogId);
                         const hasCallout = row['Callout'] && row['Callout'].trim();
                         
-                        // Calculate group counts for this driver
-                        let driverGroupCounts = { 1: 0, 2: 0, 3: 0 };
-                        if (driver && state.allData && state.activeColumn) {
-                            state.allData.forEach(dataRow => {
-                                if (!dataRow || !dataRow[state.activeColumn]) return;
-                                
-                                const dataColumnValue = dataRow[state.activeColumn].trim();
-                                if (!dataColumnValue || dataColumnValue === '') return;
-                                const dataColumnValueLower = dataColumnValue.toLowerCase();
-                                if (dataColumnValueLower === 'cancel' || 
-                                    dataColumnValueLower === 'lmcancel' || 
-                                    dataColumnValueLower === 'lm cancel' ||
-                                    dataColumnValueLower === 'cancelled' ||
-                                    dataColumnValueLower === 'lm cancelled') return;
-                                
-                                const { driver: dataDriver, group: dataGroup } = parseCombined(dataColumnValue);
-                                if (dataDriver !== driver) return;
-                                
-                                const dogCount = parseInt(dataRow['Number of Dogs'] || '1') || 1;
-                                
-                                if (dataGroup !== null) {
-                                    if (typeof dataGroup === 'string' && dataGroup.length > 1) {
-                                        dataGroup.split('').forEach(g => {
-                                            const groupNum = parseInt(g);
-                                            if (groupNum >= 1 && groupNum <= 3) {
-                                                driverGroupCounts[groupNum] += dogCount;
-                                            }
-                                        });
-                                    } else if (typeof dataGroup === 'number' && dataGroup >= 1 && dataGroup <= 3) {
-                                        driverGroupCounts[dataGroup] += dogCount;
-                                    }
-                                }
-                            });
-                        }
-                        
+                        // Group counts for this driver, from the same function the legend
+                        // and cluster labels use. The old inline loop here had its own
+                        // cancel filter that missed "1XX23", and then parsed that string
+                        // character-by-character into groups 1, 2 AND 3 -- so every hidden
+                        // dog inflated all three numbers. Cached per redraw: this runs once
+                        // per marker and was O(dogs) each time.
+                        const driverGroupCounts = driver
+                            ? (groupCountCache.get(driver) ||
+                               (groupCountCache.set(driver, computeDriverGroupCounts(driver)),
+                                groupCountCache.get(driver)))
+                            : { 1: 0, 2: 0, 3: 0 };
+
                         // Format tooltip
                         const driverDisplay = driver || 'No Driver';
                         const groupDisplay = group ? (row[state.activeColumn] ? row[state.activeColumn].split(':')[1] : group) : '?';
