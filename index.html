@@ -654,7 +654,7 @@
         </div>
 
         <div class="control-group">
-            <button class="btn btn-secondary" id="toggleStaffBtn">🅿️ Hide Start/End</button>
+            <button class="btn btn-secondary" id="toggleDriverInfoBtn">🏷️ Hide Driver Info</button>
             <button class="btn btn-secondary" id="resetColorsBtn">🎨 Reset Colors</button>
             <button class="btn btn-info" id="testConnectionBtn">🔌 Test Connection</button>
         </div>
@@ -770,6 +770,7 @@
             driverLabels: [], // zoomed-in driver name labels // guards against needless staff pin rebuilds
             staffMarkers: [], // Parking + field markers built from Staff tab
             showStaff: true, // Toggle for parking/field markers
+            showDriverInfo: (function(){ try { return localStorage.getItem('dd_showDriverInfo') === 'on'; } catch (e) { return false; } })(), // Toggle for field arrows + driver name/count labels
             filteredData: [],
             colorMap: {},
             selectedMarker: null,
@@ -2409,6 +2410,7 @@
 
                     const existing = el.querySelector('.field-arrow');
                     if (existing) existing.remove();
+                    if (!state.showDriverInfo) return;
 
                     const entry = state.staffByDriver.get(String(marker._tooltipDriver || '').trim());
                     if (!entry) return;
@@ -2579,7 +2581,9 @@
                 });
                 jobs.sort((a, b) => b.pts.length - a.pts.length);
 
-                jobs.forEach(({ driver, pts }) => {
+                // Driver name/count labels are optional (Hide Driver Info); the
+                // parking/field name captions below always draw.
+                (state.showDriverInfo ? jobs : []).forEach(({ driver, pts }) => {
                     const cx = pts.reduce((s2, p2) => s2 + p2.x, 0) / pts.length;
                     const cy = pts.reduce((s2, p2) => s2 + p2.y, 0) / pts.length;
 
@@ -2931,6 +2935,22 @@
                     Hover a marker for the drivers using it.
                 </div>
             `;
+        }
+
+        function toggleDriverInfo() {
+            state.showDriverInfo = !state.showDriverInfo;
+            try { localStorage.setItem('dd_showDriverInfo', state.showDriverInfo ? 'on' : 'off'); } catch (e) {}
+            syncDriverInfoBtn();
+            applyFieldArrows();
+            applyDriverLabels();
+            showNotification(state.showDriverInfo ? 'Showing driver info' : 'Hiding driver info', 'info', 1200);
+        }
+
+        function syncDriverInfoBtn() {
+            const btn = document.getElementById('toggleDriverInfoBtn');
+            if (!btn) return;
+            btn.classList.toggle('active', state.showDriverInfo);
+            btn.innerHTML = state.showDriverInfo ? '🏷️ Hide Driver Info' : '🏷️ Show Driver Info';
         }
 
         function toggleStaffMarkers() {
@@ -4397,6 +4417,8 @@
                 document.getElementById('clearSelectionBtn')?.addEventListener('click', clearSelection);
                 document.getElementById('resetColorsBtn')?.addEventListener('click', resetColors);
                 document.getElementById('toggleStaffBtn')?.addEventListener('click', toggleStaffMarkers);
+                document.getElementById('toggleDriverInfoBtn')?.addEventListener('click', toggleDriverInfo);
+                syncDriverInfoBtn();
                 document.getElementById('showAllBtn')?.addEventListener('click', clearFilter);
                 document.getElementById('panelToggle')?.addEventListener('click', togglePanel);
                 document.getElementById('testConnectionBtn')?.addEventListener('click', testAppsScriptConnection);
