@@ -978,21 +978,17 @@
         }
 
         // Actual group digits a value occupies, for counting. Literal digits only,
-        // except an "XX" span fills the full range: "1XX3" -> [1,2,3], "1!3" -> [1,3].
+        // except XX codes follow xxRange(): "1XX" -> [1,2,3], "2XX3" -> [2,3], "XX2" -> [1,2], "1!3" -> [1,3].
         function groupDigitsForCount(columnValue) {
             const str = String(columnValue || "");
             const ci = str.lastIndexOf(":");
             const g = ci === -1 ? "" : str.substring(ci + 1);
+            const xr = xxRange(g);
+            if (xr) return [1, 2, 3].slice(xr.start - 1, xr.end);
             const digits = [];
             for (const ch of g) {
                 const n = parseInt(ch, 10);
                 if (n >= 1 && n <= 3 && !digits.includes(n)) digits.push(n);
-            }
-            if (/xx/i.test(g) && digits.length) {
-                const lo = Math.min(...digits), hi = Math.max(...digits);
-                const range = [];
-                for (let n = lo; n <= hi; n++) range.push(n);
-                return range;
             }
             return digits;
         }
@@ -1017,12 +1013,33 @@
         }
         
         // Parse group from a group string
+        // XX codes (see the rule table): digit before XX = first group (missing = 1),
+        // last digit after XX = last group (missing = 3). Counts every group in between.
+        // 1XX -> 1,2,3   2XX -> 2,3   3XX -> 3   XX2 -> 1,2   1XX2 -> 1,2   2XX3 -> 2,3   1XX23 -> 1,2,3
+        function xxRange(value) {
+            const str = String(value || '');
+            const ci = str.lastIndexOf(':');
+            const g = ci === -1 ? str : str.substring(ci + 1);
+            const m = g.match(/([123])?xx(.*)$/i);
+            if (!m) return null;
+            const start = m[1] ? parseInt(m[1], 10) : 1;
+            const after = m[2].match(/[123]/g) || [];
+            const end = after.length ? parseInt(after[after.length - 1], 10) : 3;
+            return { start: Math.min(start, end), end: Math.max(start, end) };
+        }
+
+        function xxGroupString(r) {
+            return r.start === r.end ? r.start : [1, 2, 3].slice(r.start - 1, r.end).join('');
+        }
+
         function parseGroup(groupValue) {
             if (!groupValue) return null;
             
             const originalValue = String(groupValue).trim();
             let strValue = originalValue;
             if (!strValue) return null;
+            const xr = xxRange(originalValue);
+            if (xr) return xxGroupString(xr);
             
             if (strValue.includes('&')) {
                 const parts = strValue.split('&').map(part => {
@@ -1563,6 +1580,24 @@
             });
         }
         
+        // XX3 dogs draw as a square with "X" in it; everything else keeps its group shape.
+        function markerGroupFor(rawValue, group) {
+            // Shape uses only the digits actually written (the real stops):
+            // XX3 -> square, 2XX -> triangle, 1XX3 -> hexagon, 1XX2 -> star, 2XX3 -> trapezoid.
+            const str = String(rawValue || '');
+            const ci = str.lastIndexOf(':');
+            const g = ci === -1 ? str : str.substring(ci + 1);
+            const m = g.match(/([123])?xx(.*)$/i);
+            if (!m) return group;
+            const after = m[2].match(/[123]/g) || [];
+            const digits = [];
+            if (m[1]) digits.push(parseInt(m[1], 10));
+            if (after.length) digits.push(parseInt(after[after.length - 1], 10));
+            if (!digits.length) return 'XX123';
+            const lo = Math.min(...digits), hi = Math.max(...digits);
+            return 'XX' + [1, 2, 3].slice(lo - 1, hi).join('');
+        }
+
         function createMarkerIcon(color, isSelected = false, markerType = 'circle', group = null, isInSelection = false, dogName = null, hasCallout = false, strikeThrough = false) {
             // Special handling for Park (white diamond) - keep this for backward compatibility
             if (dogName && dogName.toLowerCase() === 'park') {
@@ -1591,6 +1626,9 @@
             const size = isInSelection ? 16 : 13;
             
             let icon;
+            let xxMark = false;
+            if (group === 'XX12' || group === 'XX23' || group === 'XX123') { xxMark = true; group = group.slice(2); }
+            const xxText = (svgSize) => xxMark ? `<text x="${svgSize/2}" y="${svgSize/2}" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-weight="700" font-size="${Math.round(svgSize*0.5)}" fill="#fff" stroke="#000" stroke-width="0.7" paint-order="stroke">X</text>` : '';
             
             try {
                 if (group === 2) {
@@ -1604,6 +1642,34 @@
                         className: `custom-triangle-marker ${isInSelection ? 'marker-selected' : ''}`,
                         iconSize: [svgSize, svgSize],
                         iconAnchor: [svgSize/2, svgSize/2]
+                    });
+                } else if (group === 'XX1') {
+                    // Circle with "X" for XX codes that end in group 1
+                    icon = L.divIcon({
+                        html: `<div style="width: ${size}px; height: ${size}px; background-color: ${color}; border: ${strokeWidth}px solid ${strokeColor}; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.3); display:flex; align-items:center; justify-content:center; font:700 ${Math.round(size*0.75)}px/1 Arial, sans-serif; color:#fff; text-shadow:0 0 2px #000, 0 0 2px #000, 0 0 3px #000; ${isInSelection ? 'animation: pulse 2s infinite;' : ''}">X</div>`,
+                        className: `custom-marker ${isInSelection ? 'marker-selected' : ''}`,
+                        iconSize: [size, size],
+                        iconAnchor: [size/2, size/2]
+                    });
+                } else if (group === 'XX2') {
+                    // Triangle with "X" for XX2 dogs (groups 1 and 2)
+                    const svgSize = size + 3;
+                    icon = L.divIcon({
+                        html: `                            <svg width="${svgSize}" height="${svgSize}" viewBox="0 0 ${svgSize} ${svgSize}" style="filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3)); ${isInSelection ? 'animation: pulse 2s infinite;' : ''}">
+                                <path d="M${svgSize/2} 2 L${svgSize-2} ${svgSize-2} L2 ${svgSize-2} Z" fill="${color}" stroke="${strokeColor}" stroke-width="${strokeWidth}"/>
+                                <text x="${svgSize/2}" y="${svgSize*0.79}" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-weight="700" font-size="${Math.round(svgSize*0.48)}" fill="#fff" stroke="#000" stroke-width="0.7" paint-order="stroke">X</text>
+                            </svg>`,
+                        className: `custom-triangle-marker ${isInSelection ? 'marker-selected' : ''}`,
+                        iconSize: [svgSize, svgSize],
+                        iconAnchor: [svgSize/2, svgSize/2]
+                    });
+                } else if (group === 'XX3') {
+                    // Square with "X" for XX3 dogs (all three groups)
+                    icon = L.divIcon({
+                        html: `<div style="width: ${size}px; height: ${size}px; background-color: ${color}; border: ${strokeWidth}px solid ${strokeColor}; box-shadow: 0 2px 4px rgba(0,0,0,0.3); display:flex; align-items:center; justify-content:center; font:700 ${Math.round(size*0.75)}px/1 Arial, sans-serif; color:#fff; text-shadow:0 0 2px #000, 0 0 2px #000, 0 0 3px #000; ${isInSelection ? 'animation: pulse 2s infinite;' : ''}">X</div>`,
+                        className: `custom-square-marker ${isInSelection ? 'marker-selected' : ''}`,
+                        iconSize: [size, size],
+                        iconAnchor: [size/2, size/2]
                     });
                 } else if (group === 3) {
                     // Square for Group 3
@@ -1620,6 +1686,7 @@
                         html: `<svg width="${svgSize}" height="${svgSize}" viewBox="0 0 ${svgSize} ${svgSize}" style="filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3)); ${isInSelection ? 'animation: pulse 2s infinite;' : ''}">
                             <polygon points="${svgSize/2},2 ${svgSize*0.6},${svgSize*0.4} ${svgSize-2},${svgSize*0.4} ${svgSize*0.7},${svgSize*0.6} ${svgSize*0.8},${svgSize-2} ${svgSize/2},${svgSize*0.75} ${svgSize*0.2},${svgSize-2} ${svgSize*0.3},${svgSize*0.6} 2,${svgSize*0.4} ${svgSize*0.4},${svgSize*0.4}" 
                                      fill="${color}" stroke="${strokeColor}" stroke-width="${strokeWidth}"/>
+                        ${xxText(svgSize)}
                         </svg>`,
                         className: `custom-star-marker ${isInSelection ? 'marker-selected' : ''}`,
                         iconSize: [svgSize, svgSize],
@@ -1632,6 +1699,7 @@
                         html: `<svg width="${svgSize}" height="${svgSize}" viewBox="0 0 ${svgSize} ${svgSize}" style="filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3)); ${isInSelection ? 'animation: pulse 2s infinite;' : ''}">
                             <path d="M3 2 L${svgSize-3} 2 L${svgSize-5} ${svgSize-2} L5 ${svgSize-2} Z" 
                                   fill="${color}" stroke="${strokeColor}" stroke-width="${strokeWidth}"/>
+                        ${xxText(svgSize)}
                         </svg>`,
                         className: `custom-trapezoid-marker ${isInSelection ? 'marker-selected' : ''}`,
                         iconSize: [svgSize, svgSize],
@@ -1647,6 +1715,7 @@
                         html: `<svg width="${svgSize}" height="${svgSize}" viewBox="0 0 ${svgSize} ${svgSize}" style="filter: drop-shadow(2px 2px 4px rgba(0,0,0,0.3)); ${isInSelection ? 'animation: pulse 2s infinite;' : ''}">
                             <polygon points="${cx+r},${cy} ${cx+r/2},${cy-r*0.866} ${cx-r/2},${cy-r*0.866} ${cx-r},${cy} ${cx-r/2},${cy+r*0.866} ${cx+r/2},${cy+r*0.866}" 
                                      fill="${color}" stroke="${strokeColor}" stroke-width="${strokeWidth}"/>
+                        ${xxText(svgSize)}
                         </svg>`,
                         className: `custom-hexagon-marker ${isInSelection ? 'marker-selected' : ''}`,
                         iconSize: [svgSize, svgSize],
@@ -3310,7 +3379,7 @@
                         tooltipHtml += buildStaffSuffix(driver) + `</div>`;
 
                         const marker = L.marker([offsetLat, offsetLng], {
-                            icon: createMarkerIcon(color, false, 'group', group, isInSelection, row['Dog Name'], hasCallout, hasTomorrowFlag(row)),
+                            icon: createMarkerIcon(color, false, 'group', markerGroupFor(row[state.activeColumn], group), isInSelection, row['Dog Name'], hasCallout, hasTomorrowFlag(row)),
                             riseOnHover: true
                         });
 
@@ -3645,7 +3714,7 @@
                         color = '#000000';
                     }
                     
-                    const newIcon = createMarkerIcon(color, isSelected, 'group', group, isInSelection, markerData.row['Dog Name'], markerData.row['Callout'] && markerData.row['Callout'].trim(), hasTomorrowFlag(markerData.row));
+                    const newIcon = createMarkerIcon(color, isSelected, 'group', markerGroupFor(markerData.row[state.activeColumn], group), isInSelection, markerData.row['Dog Name'], markerData.row['Callout'] && markerData.row['Callout'].trim(), hasTomorrowFlag(markerData.row));
                     markerData.marker.setIcon(newIcon);
                 } catch (error) {
                     console.error('Error updating marker display:', error);
@@ -3777,7 +3846,7 @@
                             
                             const dogId = getDogId(prevData.row);
                             const isInSelection = dogId && state.selectedMarkers.has(dogId);
-                            state.selectedMarker.setIcon(createMarkerIcon(color, false, 'group', prevGroup, isInSelection, prevData.row['Dog Name'], prevData.row['Callout'] && prevData.row['Callout'].trim(), hasTomorrowFlag(prevData.row)));
+                            state.selectedMarker.setIcon(createMarkerIcon(color, false, 'group', markerGroupFor(prevData.row[state.activeColumn], prevGroup), isInSelection, prevData.row['Dog Name'], prevData.row['Callout'] && prevData.row['Callout'].trim(), hasTomorrowFlag(prevData.row)));
                         } catch (clearError) {
                             console.warn('Error clearing previous marker:', clearError);
                         }
@@ -3801,7 +3870,7 @@
                     
                     const dogId = getDogId(row);
                     const isInSelection = dogId && state.selectedMarkers.has(dogId);
-                    marker.setIcon(createMarkerIcon(color, true, 'group', group, isInSelection, row['Dog Name'], row['Callout'] && row['Callout'].trim(), hasTomorrowFlag(row)));
+                    marker.setIcon(createMarkerIcon(color, true, 'group', markerGroupFor(row[state.activeColumn], group), isInSelection, row['Dog Name'], row['Callout'] && row['Callout'].trim(), hasTomorrowFlag(row)));
                 } catch (iconError) {
                     console.warn('Error updating marker icon:', iconError);
                 }
@@ -4165,7 +4234,7 @@
                     const isInSelection = dogId && state.selectedMarkers.has(dogId);
                     const hasCallout = state.selectedRow['Callout'] && state.selectedRow['Callout'].trim();
                     
-                    const newIcon = createMarkerIcon(color, true, 'group', markerData.group, isInSelection, state.selectedRow['Dog Name'], hasCallout, hasTomorrowFlag(state.selectedRow));
+                    const newIcon = createMarkerIcon(color, true, 'group', markerGroupFor(state.selectedRow[state.activeColumn], markerData.group), isInSelection, state.selectedRow['Dog Name'], hasCallout, hasTomorrowFlag(state.selectedRow));
                     markerData.marker.setIcon(newIcon);
                 }
                 
