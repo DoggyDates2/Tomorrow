@@ -1174,7 +1174,9 @@
             const nameCol = headers.indexOf('Dog Name');
             const addrCol = headers.indexOf('Address');
             const byId = new Map(); // id -> [{sheetRow, name, addr}, ...]
+            const liveRows = new Map(); // sheetRow -> raw row values
             for (let i = 1; i < values.length; i++) {
+                liveRows.set(i + 1, values[i]);
                 const id = (values[i][idCol] || '').trim();
                 if (!id) continue;
                 if (!byId.has(id)) byId.set(id, []);
@@ -1184,7 +1186,21 @@
                     addr: addrCol >= 0 ? String(values[i][addrCol] || '').trim().toLowerCase() : ''
                 });
             }
-            return { byId };
+            // Current value of one cell straight from the sheet (null if unknown).
+            const liveCell = (sheetRow, columnName) => {
+                const c = headers.indexOf(columnName);
+                const rowVals = liveRows.get(sheetRow);
+                if (c === -1 || !rowVals) return null;
+                return String(rowVals[c] || '');
+            };
+            return { byId, liveCell };
+        }
+
+        // Group portion of a "Driver:Group" cell, or '' if none.
+        function groupPartOf(cell) {
+            const str = String(cell || '');
+            const ci = str.lastIndexOf(':');
+            return ci === -1 ? '' : str.substring(ci + 1).trim();
         }
 
         // Returns the verified current sheet row for a dog, or throws a clear
@@ -3250,7 +3266,10 @@
                             row['Dog ID']
                         ].filter(Boolean).join(' ').toLowerCase();
                         
-                        if (!searchFields.includes(searchTerm)) {
+                        const norm = (t) => t.replace(/[^a-z0-9&]+/g, ' ').trim();
+                        const haystack = ' ' + norm(searchFields) + ' ';
+                        const words = norm(searchTerm).split(' ').filter(Boolean);
+                        if (!words.every(w => haystack.includes(w))) {
                             return false;
                         }
                     }
@@ -3776,7 +3795,7 @@
                                            autocomplete="off" 
                                            style="margin: 0;" />
                                 </div>
-                                <div style="flex: 1;">
+                                <div style="flex: 1; display: none;">
                                     <input type="text" id="bulkGroupInput" class="bulk-edit-input" 
                                            placeholder="Group (e.g., 1)"
                                            title="Group for all selected markers"
@@ -3791,7 +3810,7 @@
                             </div>
                         </div>
                         <div style="font-size: 10px; color: #999; margin-top: 5px;">
-                            Enter driver name and group separately. Both will be combined as "Driver:Group"
+                            Changes the driver only. Each dog keeps its current group.
                         </div>
                     </div>
                 `;
@@ -3958,7 +3977,7 @@
                                        style="width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px;"
                                        autocomplete="off">
                             </div>
-                            <div style="flex: 1;">
+                            <div style="flex: 1; display: none;">
                                 <label style="font-size: 12px; color: #666; font-weight: 600; display: block; margin-bottom: 4px;">Group:</label>
                                 <input type="text" id="editGroup" value="${escapeHtml(groupDisplayValue)}" 
                                        placeholder="Group (e.g., 1, 2DD2)"
@@ -3968,7 +3987,7 @@
                         </div>
                         
                         <div style="font-size: 10px; color: #999; margin-bottom: 8px;">
-                            Group examples: 1, 2, 3, 1DD1, 2F2, 1&2, 123
+                            Changes the driver only. Group stays as is.
                         </div>
                         
                         <div style="display: flex; gap: 4px;">
@@ -4183,18 +4202,9 @@
             }
             
             const driverValue = editDriverInput.value.trim();
-            const groupValue = editGroupInput.value.trim();
-            
-            // Combine driver and group back into the expected format
+            // Group is never edited here; it is filled in below from the sheet's current cell.
+            let groupValue = '';
             let newCombinedValue = '';
-            if (driverValue && groupValue) {
-                newCombinedValue = `${driverValue}:${groupValue}`;
-            } else if (driverValue) {
-                newCombinedValue = driverValue; // Just driver, no group
-            } else if (groupValue) {
-                newCombinedValue = `:${groupValue}`; // Just group, no driver (unusual but possible)
-            }
-            // If both are empty, newCombinedValue stays empty
             
             if (!state.selectedRow || !state.activeColumn) {
                 showNotification('Error: No row or column selected', 'error');
@@ -4212,6 +4222,17 @@
                 // Verify the dog's current row by Dog ID before writing.
                 const idIndex = await fetchIdIndexMap();
                 const sheetRowIndex = resolveVerifiedRow(state.selectedRow, idIndex);
+
+                // Keep the group exactly as it is in the sheet right now (falls back to the loaded value).
+                const liveValue = idIndex.liveCell(sheetRowIndex, state.activeColumn);
+                groupValue = groupPartOf(liveValue !== null ? liveValue : oldCombined);
+                if (driverValue && groupValue) {
+                    newCombinedValue = `${driverValue}:${groupValue}`;
+                } else if (driverValue) {
+                    newCombinedValue = driverValue;
+                } else if (groupValue) {
+                    newCombinedValue = `:${groupValue}`;
+                }
                 
                 console.log('Saving to sheet row:', sheetRowIndex, 'column:', state.activeColumn, 
                            'driver:', driverValue, 'group:', groupValue, 'combined:', newCombinedValue);
@@ -4347,7 +4368,8 @@
                     return;
                 }
                 
-                if (!confirm(`Update ${validSelectedRows.length} dogs with: "${newCombinedValue}"?`)) {
+                const confirmLabel = groupValue ? newCombinedValue : `${driverValue} (keeping each dog's group)`;
+                if (!confirm(`Update ${validSelectedRows.length} dogs with: "${confirmLabel}"?`)) {
                     return;
                 }
                 
@@ -4361,8 +4383,17 @@
                     oldValue: row[state.activeColumn] || ''
                 }));
                 
-                validSelectedRows.forEach(row => {
-                    row[state.activeColumn] = newCombinedValue;
+                // Per-dog value: when Group is blank, keep each dog's existing group and only swap the driver.
+                const valueForRow = (row, i) => {
+                    if (groupValue) return newCombinedValue;
+                    const live = idIndex.liveCell(sheetRowIndices[i], state.activeColumn);
+                    const existingGroup = groupPartOf(live !== null ? live : row[state.activeColumn]);
+                    return existingGroup ? `${driverValue}:${existingGroup}` : driverValue;
+                };
+                const newValues = validSelectedRows.map(valueForRow);
+
+                validSelectedRows.forEach((row, i) => {
+                    row[state.activeColumn] = newValues[i];
                 });
                 
                 assignDriverColors();
@@ -4371,9 +4402,9 @@
                 
                 showNotification(`Saving ${validSelectedRows.length} updates to Google Sheets...`, 'info');
                 
-                const updates = sheetRowIndices.map(sheetRowIndex => {
+                const updates = sheetRowIndices.map((sheetRowIndex, i) => {
                     const updateData = {};
-                    updateData[state.activeColumn] = newCombinedValue;
+                    updateData[state.activeColumn] = newValues[i];
                     return {
                         rowIndex: sheetRowIndex,
                         updatedData: updateData
